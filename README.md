@@ -65,3 +65,4 @@ python -m hyprfind          # if installed system-wide
 GPL-3.0-or-later
 # hyprfind
 # hyprfind
+# hyprfind
