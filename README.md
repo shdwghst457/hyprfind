@@ -1,0 +1,66 @@
+# HyprFind
+
+Finder-quality list-view file manager for Hyprland/Linux, built with PyQt6.
+
+## Features
+
+- Reliable directory refresh on **CIFS/SMB** mounts (polling) and local filesystems (inotify)
+- Folder sizes on SMB: idle-priority background queue with persistent cache
+- **Spacebar Quick Look** preview (arrow keys browse selection)
+- Sidebar with favorites, Trash, and mounted volumes
+- **Move to Trash** with undo; Shift+Delete for permanent delete
+- Cut / Copy / Paste, Duplicate, compress, Open With, Get Info
+- Drag-and-drop: move, copy, alias; spring-loaded folders
+- Multi-pane browsing (Ctrl+T), list/icon/column views
+- Breadcrumb path bar, in-folder filter (Ctrl+F), Go menu + recents
+- Dark theme suited to Hyprland
+
+## Install
+
+### CachyOS / Arch Linux
+
+```bash
+sudo pacman -S python python-pip python-pyqt6
+git clone <repo-url> && cd hyprfind
+python -m venv .venv && source .venv/bin/activate
+pip install -e ".[dev]"
+```
+
+## Run
+
+```bash
+cd /home/kweber/hyprfind
+python -m hyprfind          # if installed system-wide
+# or with the project venv:
+.venv/bin/python -m hyprfind
+```
+
+**fish shell:** use `source .venv/bin/activate.fish` (not `activate`, which is bash-only), or skip activation and run `.venv/bin/python -m hyprfind` directly.
+
+## Keyboard shortcuts
+
+| Key | Action |
+|-----|--------|
+| ↑/↓ | Move selection |
+| → / ← | Expand / collapse folder |
+| Enter | Open file or enter folder |
+| F2 | Rename |
+| Delete | Move to Trash |
+| Shift+Delete | Delete permanently |
+| Backspace | Go to parent directory |
+| Space | Toggle Quick Look (←/→ browse) |
+| Ctrl+Z / Ctrl+Shift+Z | Undo / Redo |
+| Ctrl+C / Ctrl+X / Ctrl+V | Copy / Cut / Paste |
+| Ctrl+D | Duplicate |
+| Ctrl+F | Filter current folder |
+| Ctrl+Shift+N | New folder |
+| Ctrl+Alt+N | New folder with selection |
+| Ctrl+Shift+. | Show/hide hidden files |
+| Ctrl+T | New side-by-side pane |
+| Ctrl+L | Edit path (double-click breadcrumbs) |
+| Ctrl+R / F5 | Force refresh |
+
+## License
+
+GPL-3.0-or-later
+# hyprfind
