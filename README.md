@@ -66,3 +66,4 @@ GPL-3.0-or-later
 # hyprfind
 # hyprfind
 # hyprfind
+# hyprfind
