@@ -1,0 +1,2 @@
+[console_scripts]
+hyprfind = hyprfind.app:main

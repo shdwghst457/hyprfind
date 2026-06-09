@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=HyprFind
+Comment=Finder-quality file manager for Hyprland
+Exec=hyprfind
+Icon=system-file-manager
+Terminal=false
+Type=Application
+Categories=System;FileManager;
+StartupWMClass=hyprfind
