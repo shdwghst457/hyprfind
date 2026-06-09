@@ -62,6 +62,7 @@ def main() -> int:
     app = QApplication(sys.argv)
     app.setApplicationName("HyprFind")
     app.setOrganizationName("hyprfind")
+    app.setDesktopFileName("hyprfind")
 
     _apply_dark_palette(app)
 

@@ -15,27 +15,34 @@ Finder-quality list-view file manager for Hyprland/Linux, built with PyQt6.
 - Breadcrumb path bar, in-folder filter (Ctrl+F), Go menu + recents
 - Dark theme suited to Hyprland
 
-## Install
+## Install (normal app — app menu + `hyprfind` command)
 
-### CachyOS / Arch Linux
-
-```bash
-sudo pacman -S python python-pip python-pyqt6
-git clone <repo-url> && cd hyprfind
-python -m venv .venv && source .venv/bin/activate
-pip install -e ".[dev]"
-```
-
-## Run
+On CachyOS / Arch, once:
 
 ```bash
-cd /home/kweber/hyprfind
-python -m hyprfind          # if installed system-wide
-# or with the project venv:
-.venv/bin/python -m hyprfind
+sudo pacman -S python python-pip python-pyqt6 gio xdg-user-dirs
+git clone https://github.com/YOUR_USER/hyprfind.git
+cd hyprfind
+chmod +x install-local.sh
+./install-local.sh
 ```
 
-**fish shell:** use `source .venv/bin/activate.fish` (not `activate`, which is bash-only), or skip activation and run `.venv/bin/python -m hyprfind` directly.
+That script: installs into a venv, puts `hyprfind` on `~/.local/bin`, and registers **HyprFind** in your app launcher (wofi/rofi/etc.).
+
+If a new terminal says `hyprfind: command not found`, add `~/.local/bin` to PATH once:
+
+```fish
+fish_add_path ~/.local/bin
+```
+
+Same steps on your hyprbook after `git clone`.
+
+## Run (development)
+
+```bash
+./run-hyprfind.fish          # fish, no PATH setup needed
+.venv/bin/python -m hyprfind # direct
+```
 
 ## Keyboard shortcuts
 
