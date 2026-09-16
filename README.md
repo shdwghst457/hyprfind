@@ -32,35 +32,56 @@ Finder-quality list-view file manager for Hyprland/Linux, built with PyQt6.
 On CachyOS / Arch, once:
 
 ```bash
-sudo pacman -S python python-pip python-pyqt6 glib2 xdg-user-dirs udisks2 breeze-icons
 git clone https://github.com/shdwghst457/hyprfind.git
 cd hyprfind
-chmod +x install-local.sh
 ./install-local.sh
 ```
 
-To mount network shares with **Connect to Server**, also install GVFS (add
-`gvfs-nfs` if you use NFS):
+The script installs the system packages it needs (via `pacman`, asking for sudo
+only when something is actually missing), builds a venv, puts `hyprfind` on
+`~/.local/bin`, and registers **HyprFind** in your app launcher (wofi/rofi/etc.).
+It finishes by checking that each runtime tool is really present and naming
+anything that is not. Re-running it is safe.
 
-```bash
-sudo pacman -S gvfs gvfs-smb
-```
+| Flag | Effect |
+|------|--------|
+| `--no-deps` | Skip system packages entirely |
+| `--minimal` | Skip the optional network-share packages (gvfs) |
+| `--dev` | Also install test dependencies (pytest) |
+| `-y`, `--yes` | Don't prompt (`pacman --noconfirm`) |
 
-That script: installs into a venv, puts `hyprfind` on `~/.local/bin`, and registers **HyprFind** in your app launcher (wofi/rofi/etc.).
+On a distro without `pacman` the script skips installation and prints the
+package list for you to translate.
 
-Three of those packages matter more than they look:
+### What it installs, and why
 
-- **`glib2`** — provides the `gio` command HyprFind shells out to for network
-  shares and trash operations. There is no package called `gio`.
-- **`udisks2`** — lets HyprFind mount and eject USB drives without root. A bare
-  Hyprland session runs no auto-mount daemon, so HyprFind lists attached drives
-  itself and mounts them when you click. Without udisks2 you can still browse
-  drives that are already mounted, but clicking an unmounted one will report
-  that udisksctl is missing.
+| Package | Needed for |
+|---------|-----------|
+| `glib2` | the `gio` command, used for network shares. There is no package called `gio` |
+| `udisks2` | `udisksctl`, to mount and eject USB drives without root |
+| `util-linux` | `lsblk`, to discover attached drives |
+| `xdg-user-dirs` | locating Documents / Downloads / etc. |
+| `xdg-utils` | `xdg-open`, to open files in their default app |
+| `breeze-icons` | an icon theme |
+| `gvfs`, `gvfs-smb`, `gvfs-nfs` | **Connect to Server**; optional |
+
+Three of those matter more than they look:
+
+- **`udisks2`** — a bare Hyprland session runs no auto-mount daemon, so
+  HyprFind lists attached drives itself and mounts them when you click. Without
+  udisks2 you can still browse drives that are already mounted, but clicking an
+  unmounted one reports that udisksctl is missing.
 - **`breeze-icons`** — Hyprland sets no desktop environment, so Qt finds no icon
   theme on its own and the sidebar and file list render without icons. HyprFind
   points Qt at the system theme directories and prefers `breeze-dark`, falling
   back to `Adwaita` then `hicolor`.
+- **`gvfs` / `gvfs-smb`** — without a backend, `gio` refuses every mount with
+  the unhelpful "volume doesn't implement mount". HyprFind detects this and
+  names the missing package instead, but it still cannot mount anything until
+  the backend is installed.
+
+PyQt6 is deliberately not in that list: the venv is isolated from system
+site-packages, so Qt comes from the pip wheel rather than `python-pyqt6`.
 
 If a new terminal says `hyprfind: command not found`, add `~/.local/bin` to PATH once:
 
@@ -116,8 +137,8 @@ Run the tests with:
 .venv/bin/python -m pytest -q
 ```
 
-`install-local.sh` does not pull in test dependencies. On a fresh clone, add
-them once with:
+On a fresh clone, get the test dependencies with `./install-local.sh --dev`, or
+directly:
 
 ```bash
 .venv/bin/pip install -e ".[dev]"
