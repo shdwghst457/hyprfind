@@ -122,6 +122,11 @@ class Volume:
         return self.kind == NETWORK
 
     @property
+    def is_gvfs(self) -> bool:
+        """Mounted by GVFS, so this session can unmount it without root."""
+        return self.fstype in _GVFS_FSTYPES
+
+    @property
     def is_ejectable(self) -> bool:
         """True when the user should be offered an eject control."""
         if self.kind == SYSTEM:
@@ -129,7 +134,7 @@ class Volume:
         if not self.is_mounted:
             return False
         if self.is_network:
-            return self.fstype in _GVFS_FSTYPES
+            return self.is_gvfs
         return self.kind in (REMOVABLE, OPTICAL)
 
     @property
@@ -279,6 +284,21 @@ def _classify_block(device: dict, parent: dict | None, mount_point: str | None) 
     return INTERNAL
 
 
+# Sidebar order. Shares the system mounted sit above everything this session can
+# eject, so the eject glyphs gather at the bottom of the list instead of being
+# interleaved with rows that have none. Ranking by kind rather than by
+# is_ejectable is deliberate: a drive must not jump up the list when it is
+# unmounted and back down when it is mounted again.
+_SIDEBAR_ORDER = {SYSTEM: 0, INTERNAL: 1, REMOVABLE: 3, OPTICAL: 4, NETWORK: 5}
+_SYSTEM_SHARE_RANK = 2
+
+
+def _sidebar_rank(volume: Volume) -> int:
+    if volume.kind == NETWORK and not volume.is_gvfs:
+        return _SYSTEM_SHARE_RANK
+    return _SIDEBAR_ORDER.get(volume.kind, 9)
+
+
 class VolumeService:
     """Discovers drives and shares; mounts and ejects them on request."""
 
@@ -307,9 +327,8 @@ class VolumeService:
             if os.path.normpath(vol.mount_point or "") not in claimed
         ]
 
-        order = {SYSTEM: 0, INTERNAL: 1, REMOVABLE: 2, OPTICAL: 3, NETWORK: 4}
         combined = block + network
-        combined.sort(key=lambda v: (order.get(v.kind, 9), v.name.casefold()))
+        combined.sort(key=lambda v: (_sidebar_rank(v), v.name.casefold()))
         return combined
 
     def _block_volumes(self) -> list[Volume]:

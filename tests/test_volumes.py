@@ -1,5 +1,7 @@
 """Tests for VolumeService block-device discovery."""
 
+import copy
+
 import hyprfind.core.volumes as volumes_module
 from hyprfind.core.mounts import MountService
 from hyprfind.core.volumes import (
@@ -282,6 +284,47 @@ def test_gvfs_shares_appear_as_network_volumes(tmp_path, monkeypatch):
     assert all(v.kind == NETWORK for v in found)
     # GVFS owns these, so `gio mount -u` can take them down.
     assert all(v.is_ejectable for v in found)
+
+
+def test_system_shares_sort_above_anything_ejectable(tmp_path, monkeypatch):
+    """Rows carrying an eject glyph gather at the bottom of Locations."""
+    monkeypatch.setattr(volumes_module, "_lsblk_json", lambda: LSBLK)
+    mounts_file = tmp_path / "mounts"
+    mounts_file.write_text(MOUNTS, encoding="utf-8")
+    gvfs = tmp_path / "gvfs"
+    gvfs.mkdir()
+    (gvfs / "smb-share:server=172.16.0.47,share=eiga").mkdir()
+    service = VolumeService(
+        MountService(str(mounts_file), is_dir=lambda _p: True),
+        gvfs_root=lambda: str(gvfs),
+    )
+    order = [v.name for v in service.volumes()]
+
+    for share in ("Anime", "transport"):
+        assert order.index(share) < order.index("USB STICK")
+        assert order.index(share) < order.index("eiga")
+    # And they still sit below the local disks they used to follow.
+    assert order.index("Basic data partition") < order.index("Anime")
+
+
+def test_a_drive_keeps_its_place_when_it_is_unmounted(tmp_path, monkeypatch):
+    """Ordering must not key on ejectability, or rows would jump on mount."""
+    mounts_file = tmp_path / "mounts"
+    mounts_file.write_text(MOUNTS, encoding="utf-8")
+
+    def order_with_stick_mounted(mounted: bool) -> list[str]:
+        listing = copy.deepcopy(LSBLK)
+        for disk in listing:
+            for part in disk.get("children") or []:
+                if part["path"] == "/dev/sdc1":
+                    point = "/run/media/u/USB STICK" if mounted else None
+                    part["mountpoint"] = point
+                    part["mountpoints"] = [point]
+        monkeypatch.setattr(volumes_module, "_lsblk_json", lambda: listing)
+        service = VolumeService(MountService(str(mounts_file), is_dir=lambda _p: True))
+        return [v.name for v in service.volumes()]
+
+    assert order_with_stick_mounted(True) == order_with_stick_mounted(False)
 
 
 def test_kernel_network_mounts_get_no_eject_control(tmp_path, monkeypatch):

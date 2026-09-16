@@ -88,6 +88,8 @@ Hyprland session.
 | 2b.32 | Both mounts of one share coexist | Have `/mnt/Anime` via fstab and also mount `Anime` over GVFS | Both rows listed; they are genuinely different mount points | |
 | 2b.32a | fstab share offers no eject | Hover a cifs/nfs row from fstab or an automount unit | **No** eject glyph, and right-click has no Disconnect: unmounting it needs root, so the button could only ever fail | |
 | 2b.32b | The GVFS twin still ejects | With both mounts of 2b.32 present, hover each | Only the GVFS row has the glyph | |
+| 2b.32c | Eject glyphs sit together | Observe Locations with fstab shares, a USB stick and a GVFS share | Disks, then system-mounted shares, then the ejectable rows — every glyph in one group at the bottom | |
+| 2b.32d | Rows hold still | Mount and unmount the USB stick | Its row stays in the same position; only the glyph and dimming change | |
 | 2b.27 | Sibling partitions distinct | Two unlabelled partitions on one disk | Different names, not two identical rows | |
 
 ---
