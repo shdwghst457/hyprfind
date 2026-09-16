@@ -9,6 +9,7 @@ from hyprfind.core.volumes import (
     SYSTEM,
     VolumeService,
     _first_mountpoint,
+    _parse_gvfs_dir,
 )
 
 MOUNTS = """\
@@ -120,7 +121,11 @@ def build_service(tmp_path, monkeypatch) -> VolumeService:
     monkeypatch.setattr(volumes_module, "_lsblk_json", lambda: LSBLK)
     mounts_file = tmp_path / "mounts"
     mounts_file.write_text(MOUNTS, encoding="utf-8")
-    return VolumeService(MountService(str(mounts_file), is_dir=lambda _p: True))
+    return VolumeService(
+        MountService(str(mounts_file), is_dir=lambda _p: True),
+        # Isolate from the real GVFS mounts of whoever runs the tests.
+        gvfs_root=lambda: str(tmp_path / "no-gvfs"),
+    )
 
 
 def by_name(service: VolumeService) -> dict:
@@ -223,3 +228,73 @@ def test_mount_output_parsing():
     parse = VolumeService._parse_mount_output
     assert parse("Mounted /dev/sdb1 at /run/media/u/BACKUP.") == "/run/media/u/BACKUP"
     assert parse("nothing useful") is None
+
+
+# --------------------------------------------------------------- GVFS mounts
+#
+# /proc/mounts lists only the single gvfsd-fuse root, never the individual
+# shares, so a GVFS mount used to be invisible in the sidebar.
+
+
+def test_parse_smb_share_dir():
+    assert _parse_gvfs_dir("smb-share:server=172.16.0.47,share=data") == (
+        "data",
+        "smb://172.16.0.47/data",
+    )
+
+
+def test_parse_uses_the_share_name_not_the_host():
+    label, _ = _parse_gvfs_dir("smb-share:server=nas,share=tv shows")
+    assert label == "tv shows"
+
+
+def test_parse_host_only_backends():
+    # sftp and ftp expose one filesystem, so the host is the name.
+    assert _parse_gvfs_dir("sftp:host=buildbox") == ("buildbox", "sftp://buildbox")
+    assert _parse_gvfs_dir("ftp:host=files.example") == (
+        "files.example",
+        "ftp://files.example",
+    )
+
+
+def test_parse_other_backend_key_names():
+    assert _parse_gvfs_dir("nfs:host=box,export=vol1")[0] == "vol1"
+    assert _parse_gvfs_dir("afp-volume:host=mac,volume=Media")[0] == "Media"
+
+
+def test_parse_rejects_non_mount_names():
+    assert _parse_gvfs_dir("not-a-mount") is None
+    assert _parse_gvfs_dir("") is None
+    # Nothing identifying in the parameters.
+    assert _parse_gvfs_dir("smb-share:ssl=true") is None
+
+
+def test_gvfs_shares_appear_as_network_volumes(tmp_path, monkeypatch):
+    root = tmp_path / "gvfs"
+    root.mkdir()
+    (root / "smb-share:server=172.16.0.47,share=data").mkdir()
+    (root / "sftp:host=buildbox").mkdir()
+    (root / "junk-file").write_text("")  # not a directory
+    service = VolumeService(MountService(), gvfs_root=lambda: str(root))
+    found = service._gvfs_volumes()
+
+    assert sorted(v.name for v in found) == ["buildbox", "data"]
+    assert all(v.kind == NETWORK for v in found)
+    # Network mounts get an eject control.
+    assert all(v.is_ejectable for v in found)
+
+
+def test_gvfs_share_mount_point_is_the_fuse_dir(tmp_path, monkeypatch):
+    root = tmp_path / "gvfs"
+    root.mkdir()
+    share = root / "smb-share:server=nas,share=media"
+    share.mkdir()
+    service = VolumeService(MountService(), gvfs_root=lambda: str(root))
+    volume = service._gvfs_volumes()[0]
+    assert volume.mount_point == str(share)
+    assert volume.is_mounted
+
+
+def test_missing_gvfs_root_is_not_fatal():
+    service = VolumeService(MountService(), gvfs_root=lambda: "/nonexistent/gvfs")
+    assert service._gvfs_volumes() == []

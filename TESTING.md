@@ -80,6 +80,12 @@ Hyprland session.
 | 2b.24 | Windows housekeeping hidden | On a dual-boot disk, observe Locations | No "EFI system partition", no "Recovery", no "Microsoft reserved" | |
 | 2b.25 | Windows data offered | Same disk | The large NTFS data partition **is** listed and mounts on click | |
 | 2b.26 | Unlabelled partitions named | Observe a partition with no filesystem label | Named by size ("500.00 GB Volume"), not by the parent disk's model | |
+| 2b.27 | GVFS share appears | Mount a share via Connect to Server | Appears in Locations next to fstab/autofs shares, with a network icon | |
+| 2b.28 | GVFS share is not from /proc/mounts | While mounted, run `grep gvfs /proc/mounts` | Only the single `gvfsd-fuse` root is listed — the share is found by reading the fuse directory instead | |
+| 2b.29 | GVFS share disconnects | Right-click the GVFS share → Disconnect | Unmounts via `gio`; row disappears | |
+| 2b.30 | GVFS share appears without restart | Mount a share, watch the sidebar | Row appears within ~4 s from the device poll, no manual refresh | |
+| 2b.31 | GVFS lowercases names | Mount a share called `Data` | Row reads `data`. GVFS lowercases its mount directory and reports the same via `gio info`, so the original case is not recoverable | |
+| 2b.32 | Both mounts of one share coexist | Have `/mnt/Anime` via fstab and also mount `Anime` over GVFS | Both rows listed; they are genuinely different mount points | |
 | 2b.27 | Sibling partitions distinct | Two unlabelled partitions on one disk | Different names, not two identical rows | |
 
 ---

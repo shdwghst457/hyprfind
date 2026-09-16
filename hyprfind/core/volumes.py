@@ -11,12 +11,15 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from hyprfind.core.mounts import Mount, MountService
 from hyprfind.utils.formatting import format_bytes
+from hyprfind.utils.paths import gvfs_base
 
 LSBLK_COLUMNS = (
     "NAME,PATH,LABEL,PARTLABEL,SIZE,FSTYPE,MOUNTPOINT,MOUNTPOINTS,"
@@ -52,6 +55,44 @@ OPTICAL = "optical"
 NETWORK = "network"
 
 _COMMAND_TIMEOUT = 15.0
+
+
+# GVFS names its fuse directories "<backend>:key=value,key=value", e.g.
+# "smb-share:server=nas,share=media" or "sftp:host=buildbox".
+_GVFS_DIR = re.compile(r"^(?P<backend>[a-z0-9+.\-]+):(?P<params>.+)$")
+
+# Whichever of these a backend uses is the share's own name; the rest of the
+# keys describe how to reach it.
+_GVFS_NAME_KEYS = ("share", "volume", "export", "mount", "prefix")
+_GVFS_HOST_KEYS = ("server", "host")
+
+
+def _parse_gvfs_dir(name: str) -> tuple[str, str] | None:
+    """Turn a GVFS directory name into ``(label, device)``.
+
+    GVFS lowercases the share name when it builds the directory, and reports
+    the same lowercased text as its display name, so the server's original
+    capitalisation is not recoverable here.
+    """
+    match = _GVFS_DIR.match(name)
+    if match is None:
+        return None
+
+    params: dict[str, str] = {}
+    for chunk in match.group("params").split(","):
+        key, _, value = chunk.partition("=")
+        if key and value:
+            params[key.strip()] = value.strip()
+
+    host = next((params[k] for k in _GVFS_HOST_KEYS if k in params), "")
+    share = next((params[k] for k in _GVFS_NAME_KEYS if k in params), "")
+    label = share or host
+    if not label:
+        return None
+
+    scheme = match.group("backend").split("-", 1)[0]
+    device = f"{scheme}://{host}/{share}" if share else f"{scheme}://{host}"
+    return label, device
 
 
 @dataclass(frozen=True)
@@ -233,8 +274,14 @@ def _classify_block(device: dict, parent: dict | None, mount_point: str | None) 
 class VolumeService:
     """Discovers drives and shares; mounts and ejects them on request."""
 
-    def __init__(self, mount_service: MountService | None = None) -> None:
+    def __init__(
+        self,
+        mount_service: MountService | None = None,
+        *,
+        gvfs_root: Callable[[], str] = gvfs_base,
+    ) -> None:
         self._mount_service = mount_service or MountService()
+        self._gvfs_root = gvfs_root
 
     # ---------------------------------------------------------------- discovery
 
@@ -248,7 +295,7 @@ class VolumeService:
         }
         network = [
             vol
-            for vol in self._network_volumes()
+            for vol in self._network_volumes() + self._gvfs_volumes()
             if os.path.normpath(vol.mount_point or "") not in claimed
         ]
 
@@ -327,6 +374,39 @@ class VolumeService:
                     mount_point=mount.mount_point,
                     fstype=mount.fstype,
                     kind=SYSTEM if mount.mount_point == "/" else INTERNAL,
+                )
+            )
+        return volumes
+
+    def _gvfs_volumes(self) -> list[Volume]:
+        """Shares mounted through GVFS.
+
+        /proc/mounts lists only the single gvfsd-fuse root, never the
+        individual shares, so a GVFS mount is invisible to MountService. The
+        shares exist as directories under the fuse root, so read those.
+        """
+        root = self._gvfs_root()
+        try:
+            entries = sorted(os.listdir(root))
+        except OSError:
+            return []
+
+        volumes: list[Volume] = []
+        for entry in entries:
+            mount_point = os.path.join(root, entry)
+            if not os.path.isdir(mount_point):
+                continue
+            parsed = _parse_gvfs_dir(entry)
+            if parsed is None:
+                continue
+            label, device = parsed
+            volumes.append(
+                Volume(
+                    name=label,
+                    device=device,
+                    mount_point=mount_point,
+                    fstype="fuse.gvfsd-fuse",
+                    kind=NETWORK,
                 )
             )
         return volumes
