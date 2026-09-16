@@ -1,8 +1,42 @@
 """Tests for the GIO mount layer and how credentials reach it."""
 
-from hyprfind.core.gio_mount import NO_BACKEND_ERROR, Credentials
-from hyprfind.core import servers
+from hyprfind.core import gio_mount, servers
+from hyprfind.core.gio_mount import NO_BACKEND_ERROR, Credentials, mount_uri
 from hyprfind.core.servers import mount_server, parse_server_uri
+
+
+def fake_gio(monkeypatch, keyring: bool):
+    """Capture the credentials that reach the GIO call, with no D-Bus or network."""
+    seen: dict = {}
+
+    def fake_inner(uri, credentials, timeout):
+        seen["credentials"] = credentials
+        return None
+
+    monkeypatch.setattr(gio_mount, "keyring_available", lambda: keyring)
+    monkeypatch.setattr(gio_mount, "_mount", fake_inner)
+    return seen
+
+
+def test_saving_is_skipped_when_the_keyring_cannot_take_it(monkeypatch):
+    """Asking GVFS to save into a locked keyring hangs the mount, so never ask."""
+    seen = fake_gio(monkeypatch, keyring=False)
+    mount_uri("smb://nas/media", Credentials(password="PLACEHOLDER", remember=True))
+    assert seen["credentials"].remember is False
+    # The rest of the credentials must survive the override.
+    assert seen["credentials"].password == "PLACEHOLDER"
+
+
+def test_saving_is_requested_when_the_keyring_is_usable(monkeypatch):
+    seen = fake_gio(monkeypatch, keyring=True)
+    mount_uri("smb://nas/media", Credentials(remember=True))
+    assert seen["credentials"].remember is True
+
+
+def test_a_caller_that_declined_is_not_overridden(monkeypatch):
+    seen = fake_gio(monkeypatch, keyring=True)
+    mount_uri("smb://nas/media", Credentials(remember=False))
+    assert seen["credentials"].remember is False
 
 
 def fake_mount(monkeypatch, error=None, mount_point="/run/user/1000/gvfs/share"):

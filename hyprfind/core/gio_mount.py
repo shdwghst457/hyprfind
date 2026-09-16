@@ -10,7 +10,7 @@ re-authenticated every time.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import gi
 
@@ -38,17 +38,35 @@ class Credentials:
 SECRET_SERVICE = "org.freedesktop.secrets"
 
 
-def keyring_available() -> bool:
-    """Whether a Secret Service is running or can be started on demand.
+_SECRET_PATH = "/org/freedesktop/secrets"
+_COLLECTION_IFACE = "org.freedesktop.Secret.Collection"
+# Short: this runs while the user waits, and must never be the thing that hangs.
+_SECRET_TIMEOUT_MS = 2000
 
-    Without one, GVFS accepts a request to save a password but has nowhere to
-    put it, so the promise to remember would quietly go nowhere. A bare
-    Hyprland session often has no keyring: KDE's ksecretd implements the API
-    but only registers its own KDE name, so nothing auto-starts it.
+
+def keyring_available() -> bool:
+    """Whether a password can actually be saved right now.
+
+    It is not enough for a Secret Service to answer: the collection it would
+    save into has to be unlocked as well. Asking GVFS to store a password in a
+    locked keyring makes it wait for an unlock prompt, and if nothing can show
+    that prompt the mount hangs until it times out — and worse, GVFS keeps the
+    dead attempt, so every later mount of the same share queues behind it. A
+    bare Hyprland session hits this easily: the login keyring is locked at boot
+    unless PAM unlocks it, and gcr-prompter may never manage to show a window.
     """
     try:
         bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
-        for method in ("ListNames", "ListActivatableNames"):
+    except GLib.Error:
+        return False
+    if not _service_present(bus):
+        return False
+    return _default_collection_is_unlocked(bus)
+
+
+def _service_present(bus) -> bool:
+    for method in ("ListNames", "ListActivatableNames"):
+        try:
             reply = bus.call_sync(
                 "org.freedesktop.DBus",
                 "/org/freedesktop/DBus",
@@ -57,14 +75,53 @@ def keyring_available() -> bool:
                 None,
                 GLib.VariantType("(as)"),
                 Gio.DBusCallFlags.NONE,
-                2000,
+                _SECRET_TIMEOUT_MS,
                 None,
             )
-            if SECRET_SERVICE in reply.unpack()[0]:
-                return True
+        except GLib.Error:
+            return False
+        if SECRET_SERVICE in reply.unpack()[0]:
+            return True
+    return False
+
+
+def _default_collection_is_unlocked(bus) -> bool:
+    """True when the collection GVFS would save into is open for business."""
+    try:
+        reply = bus.call_sync(
+            SECRET_SERVICE,
+            _SECRET_PATH,
+            "org.freedesktop.Secret.Service",
+            "ReadAlias",
+            GLib.Variant("(s)", ("default",)),
+            GLib.VariantType("(o)"),
+            Gio.DBusCallFlags.NONE,
+            _SECRET_TIMEOUT_MS,
+            None,
+        )
     except GLib.Error:
         return False
-    return False
+    path = reply.unpack()[0]
+    # "/" means the alias points at nothing.
+    if path == "/":
+        return False
+    try:
+        locked = bus.call_sync(
+            SECRET_SERVICE,
+            path,
+            "org.freedesktop.DBus.Properties",
+            "Get",
+            GLib.Variant("(ss)", (_COLLECTION_IFACE, "Locked")),
+            GLib.VariantType("(v)"),
+            Gio.DBusCallFlags.NONE,
+            _SECRET_TIMEOUT_MS,
+            None,
+        )
+    except GLib.Error:
+        # A collection listed but not answering is no use either; the login
+        # keyring reports exactly this when it has never been unlocked.
+        return False
+    return not locked.unpack()[0]
 
 
 def mount_uri(
@@ -78,6 +135,11 @@ def mount_uri(
     context = GLib.MainContext.new()
     context.push_thread_default()
     try:
+        # Checked here rather than trusted from the caller, because getting it
+        # wrong does not merely fail to save: it hangs the mount and poisons
+        # every later attempt at the same share.
+        if credentials.remember and not keyring_available():
+            credentials = replace(credentials, remember=False)
         return _mount(uri, credentials, timeout)
     finally:
         context.pop_thread_default()
