@@ -158,16 +158,24 @@ changes:
 - a new dependency in `pyproject.toml`
 - a change to the `[project.scripts]` entry point
 - the `.desktop` launcher entry or the project's location on disk
+- a new system package in `install-local.sh`, or a change to how the venv is
+  built — `python-gobject` is the example: it has no usable wheel, so the venv
+  has to be rebuilt with `--system-site-packages` before `import gi` works
 
 ### Updating another machine
 
-On a machine that already has a clone (the hyprbook), pulling is the whole
-deploy step — the editable install picks the new code up on next launch:
+On a machine that already has a clone (the hyprbook), pulling is usually the
+whole deploy step — the editable install picks the new code up on next launch:
 
 ```bash
 cd ~/hyprfind
 git pull
 ```
+
+Re-run `./install-local.sh` after pulling when the list above applies. It is
+idempotent: it installs only missing packages, repairs an existing venv whose
+`pyvenv.cfg` still says `include-system-site-packages = false`, and leaves your
+settings and bookmarks alone.
 
 On a machine that has never had it, follow the Install section above. Note that
 `.venv/` is gitignored, so each machine builds its own via `install-local.sh`.
