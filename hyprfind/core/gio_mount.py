@@ -85,8 +85,10 @@ def mount_uri(
 
 def _mount(uri: str, credentials: Credentials, timeout: float) -> str | None:
     loop = GLib.MainLoop.new(GLib.MainContext.get_thread_default(), False)
-    # A list because the callbacks assign to it from the loop.
+    # Lists because the callbacks assign to them from inside the loop.
     outcome: list[str | None] = ["The server never answered"]
+    # Why we gave up, when we are the ones who did.
+    reason: list[str | None] = [None]
     prompts = 0
 
     def on_ask_password(operation, _message, default_user, default_domain, flags):
@@ -95,7 +97,7 @@ def _mount(uri: str, credentials: Credentials, timeout: float) -> str | None:
         if prompts > 1:
             # gvfsd re-asks when an answer is rejected. Without this the loop
             # would keep replaying the same wrong password forever.
-            outcome[0] = "Wrong user name or password"
+            reason[0] = "Wrong user name or password"
             operation.reply(Gio.MountOperationResult.ABORTED)
             return
         anonymous_ok = bool(flags & Gio.AskPasswordFlags.ANONYMOUS_SUPPORTED)
@@ -127,7 +129,7 @@ def _mount(uri: str, credentials: Credentials, timeout: float) -> str | None:
             location.mount_enclosing_volume_finish(result)
             outcome[0] = None
         except GLib.Error as error:
-            outcome[0] = _describe(error, outcome[0])
+            outcome[0] = _describe(error, reason[0])
         loop.quit()
 
     def on_timeout():
@@ -204,8 +206,9 @@ def _describe(error: GLib.Error, pending: str | None) -> str | None:
     if error.matches(Gio.io_error_quark(), Gio.IOErrorEnum.ALREADY_MOUNTED):
         return None
     if error.matches(Gio.io_error_quark(), Gio.IOErrorEnum.FAILED_HANDLED):
-        # Our own ask-password handler aborted, and already said why.
-        return pending or "Authentication failed"
+        # Someone answered the prompt and gave up. If that was us, say which
+        # answer was refused; otherwise GIO has nothing quotable to add.
+        return pending or "Authentication was cancelled"
     if error.matches(Gio.io_error_quark(), Gio.IOErrorEnum.NOT_SUPPORTED):
         return NO_BACKEND_ERROR
     if error.matches(Gio.io_error_quark(), Gio.IOErrorEnum.PERMISSION_DENIED):
