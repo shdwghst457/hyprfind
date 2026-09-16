@@ -513,6 +513,17 @@ Aesthetic regressions are easy to miss, so check these deliberately.
 | 25.34 | Picker stays live | Mount a large/slow share | Dialog responsive, status shows "Mounting &lt;share&gt;…" | |
 | 25.35 | Partial failure | Select one allowed and one forbidden share | Navigates to the good one; status names the failure | |
 | 25.36 | Non-browsable protocol | Choose SFTP with a bare host | Mounts directly; no picker (one filesystem, nothing to pick) | |
+| 25.37 | Remember is offered | Open the dialog with a keyring running | "Remember this password in my keyring" is present and checked | |
+| 25.38 | Password is reused | Connect with it ticked, unmount, connect again with the password field empty | Mounts without asking; no error | |
+| 25.39 | Browsing reuses it too | After 25.38, enter the bare host with no password | Share list appears without a prompt | |
+| 25.40 | It really is in the keyring | `secret-tool search server <host>` after 25.38 | An entry exists, created by gvfs (not by HyprFind) | |
+| 25.41 | Declining is honoured | Untick it, connect, unmount, connect again with no password | Fails to authenticate; nothing was saved | |
+| 25.42 | No keyring is admitted | On a session with no Secret Service (`secret-tool search x y` says "not activatable") | Checkbox greyed and unticked, with a note naming ksecretd/gnome-keyring | |
+| 25.43 | Guest needs no saving | Tick "Connect as guest" | Remember greys out; a guest login has no password to keep | |
+| 25.44 | Wrong password fails once | Connect with a deliberately wrong password | One clear "Wrong user name or password"; no retry loop or hang | |
+| 25.45 | Pasted password is not stored | Paste `smb://user:pw@host/share` | Address shows `user@host/share`, password lands in the password field | |
+| 25.46 | Nothing leaks to disk | After 25.45, connect, then read `~/.config/hyprfind/servers.json` | Host and user only, no password; file mode is `600` | |
+| 25.47 | Recent entry stays usable | Click that recent server | Reconnects using the keyring, no retyping | |
 
 ---
 
@@ -550,6 +561,12 @@ Use this section to avoid filing false bugs:
 - **Tab drag between panes** — tabs reorder within a pane but cannot be dragged out
 - **Guest SMB connections** — "Connect as guest" sends blank credentials, which
   works on shares that allow anonymous access and fails clearly on those that do not
+- **Forgetting a saved password** — GVFS owns the keyring entry it creates and
+  exposes no API to delete it, so removing one is a job for your keyring manager
+  (`seahorse`, KWalletManager, or `secret-tool clear`). HyprFind deliberately does
+  not build a second store alongside it
+- **Editing a saved password** — reconnecting with a new password updates the
+  keyring entry, but there is no "change saved password" screen
 - **Kerberos / saved keyring credentials** — passwords are passed to `gio` per
   connection and never stored
 - **WebDAV** — Arch's gvfs 1.60 ships no `gvfsd-dav` and no package provides

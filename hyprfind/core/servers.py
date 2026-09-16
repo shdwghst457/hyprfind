@@ -1,8 +1,8 @@
 """Network share mounting through GVFS, plus a list of recent servers.
 
-Shares are mounted with ``gio``, which puts them under the user's GVFS
-directory. gio has no flags for credentials — it prompts on stdin — so the
-prompts are answered by piping the answers in order.
+Shares are mounted through GIO, which puts them under the user's GVFS
+directory and lets GVFS keep the password in the system keyring. See
+``hyprfind.core.gio_mount`` for why the ``gio`` command line is not used.
 """
 
 from __future__ import annotations
@@ -16,6 +16,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
+from hyprfind.core.gio_mount import (
+    NO_BACKEND_ERROR,
+    Credentials,
+    list_children,
+    mount_uri,
+)
 from hyprfind.utils.paths import config_dir
 
 @dataclass(frozen=True)
@@ -99,9 +105,49 @@ def split_server_uri(text: str) -> tuple[str, str]:
     if address.startswith("\\\\"):
         return "smb", address[2:].replace("\\", "/").strip("/")
     if "://" not in address:
-        return DEFAULT_SCHEME, address.strip("/")
+        return DEFAULT_SCHEME, _without_password(address.strip("/"))
     scheme, rest = address.split("://", 1)
-    return protocol_for(scheme).scheme, rest.strip("/")
+    return protocol_for(scheme).scheme, _without_password(rest.strip("/"))
+
+
+def _split_userinfo(location: str) -> tuple[str, str]:
+    """Split ``user:password@host/share`` into ``(userinfo, remainder)``.
+
+    Only the authority is considered, so a password is never mistaken for part
+    of a path, and an IPv6 literal's colons are left alone.
+    """
+    authority, slash, path = location.partition("/")
+    if "@" not in authority:
+        return "", location
+    # rsplit: an SMB user name may itself contain an @.
+    userinfo, _, host = authority.rpartition("@")
+    return userinfo, f"{host}{slash}{path}"
+
+
+def _without_password(location: str) -> str:
+    """Drop a pasted password, keeping the user name.
+
+    Stored addresses and the recent servers menu must never hold a secret, and
+    the password belongs in the dialog's own field instead.
+    """
+    userinfo, remainder = _split_userinfo(location)
+    if not userinfo:
+        return location
+    user = userinfo.split(":", 1)[0]
+    return f"{user}@{remainder}" if user else remainder
+
+
+def credentials_in_uri(text: str) -> tuple[str, str]:
+    """The ``(user, password)`` embedded in pasted input, each possibly empty."""
+    address = text.strip()
+    if address.startswith("\\\\"):
+        return "", ""
+    location = address.split("://", 1)[1] if "://" in address else address
+    userinfo, _ = _split_userinfo(location.strip("/"))
+    if not userinfo:
+        return "", ""
+    user, _, password = userinfo.partition(":")
+    return unquote(user), unquote(password)
 
 
 def build_server_uri(scheme: str, location: str) -> str:
@@ -195,32 +241,6 @@ def gvfs_mount_point(target: ServerTarget) -> str | None:
     return None
 
 
-def _credential_input(
-    user: str, domain: str, password: str, anonymous: bool, scheme: str = DEFAULT_SCHEME
-) -> str:
-    """Build the stdin gio's interactive prompts expect, in prompt order.
-
-    The prompt sequence follows the backend: only SMB asks for a domain, so
-    sending one to the others would shift every later answer by a line.
-    """
-    protocol = protocol_for(scheme)
-    if not protocol.credentials:
-        return "\n"
-    if anonymous:
-        # Blank answers accept gio's defaults and try an anonymous bind.
-        return "\n\n\n\n"
-    answers = [user, domain, password] if protocol.domain else [user, password]
-    return "\n".join(answers) + "\n\n"
-
-
-_ALREADY_MOUNTED = re.compile(r"already mounted", re.IGNORECASE)
-
-# gio's two wordings for "no GVFS backend handles this scheme". The apostrophe
-# is a Unicode right single quote in gio's output, so match it loosely.
-_NO_BACKEND = re.compile(
-    r"doesn.t implement mount|is not mountable|not supported", re.IGNORECASE
-)
-
 def _mount_definition_dirs() -> list[str]:
     """Directories holding GVFS ``.mount`` files."""
     roots = [d for d in os.environ.get("XDG_DATA_DIRS", "").split(":") if d]
@@ -309,51 +329,47 @@ def mount_server(
     domain: str = "",
     password: str = "",
     anonymous: bool = False,
+    remember: bool = True,
 ) -> tuple[str | None, str | None]:
     """Mount a share. Returns ``(mount_point, error)``.
 
-    Blocking; call it from a worker thread.
+    With ``remember`` set, GVFS stores the password in the system keyring and
+    supplies it itself next time, so the password never has to come back
+    through here. Blocking; call it from a worker thread.
     """
-    if shutil.which("gio") is None:
-        return None, "gio not installed (install glib2 and gvfs)"
-
     unsupported = missing_backend(target.scheme)
     if unsupported:
         return None, unsupported
 
-    try:
-        proc = subprocess.run(
-            ["gio", "mount", target.uri],
-            input=_credential_input(
-                user, domain, password, anonymous, target.scheme
-            ),
-            capture_output=True,
-            text=True,
-            timeout=MOUNT_TIMEOUT,
-            check=False,
-        )
-    except subprocess.TimeoutExpired:
-        return None, "Timed out waiting for the server"
-    except OSError as exc:
-        return None, str(exc)
-
-    output = f"{proc.stdout}\n{proc.stderr}".strip()
-    if proc.returncode == 0 or _ALREADY_MOUNTED.search(output):
+    error = mount_uri(
+        target.uri,
+        Credentials(
+            user=user,
+            domain=domain,
+            password=password,
+            anonymous=anonymous,
+            remember=remember,
+        ),
+    )
+    if error is None:
         point = gvfs_mount_point(target)
         if point:
             return point, None
         return None, "Mounted, but the share directory could not be found"
+    return None, _explain(error, target.scheme)
 
-    detail = _last_meaningful_line(output) or "connection failed"
-    if _NO_BACKEND.search(detail):
-        # Reached when the backend exists but cannot serve this URI, and on
-        # distros whose gvfs layout the preflight check does not recognise.
-        protocol = protocol_for(target.scheme)
-        return None, (
-            f"{protocol.label} shares cannot be mounted: no GVFS backend "
-            f"answered. Install {protocol.package}, then log out and back in."
-        )
-    return None, detail
+
+def _explain(error: str, scheme: str) -> str:
+    """Add install advice to the one GIO error that calls for it."""
+    if error != NO_BACKEND_ERROR:
+        return error
+    # Reached when the preflight check did not recognise this system's gvfs
+    # layout, so the backend looked present but nothing served the URI.
+    protocol = protocol_for(scheme)
+    return (
+        f"{protocol.label} shares cannot be mounted: no GVFS backend "
+        f"answered. Install {protocol.package}, then log out and back in."
+    )
 
 
 _SMB_MOUNT_DIR = re.compile(r"^smb-share:server=(?P<server>[^,]+),share=(?P<share>.+)$")
@@ -387,44 +403,33 @@ def list_shares(
     domain: str = "",
     password: str = "",
     anonymous: bool = False,
+    remember: bool = True,
 ) -> tuple[list[str], str | None]:
     """List the shares a server offers. Returns ``(shares, error)``.
 
-    Blocking; call it from a worker thread. Uses ``gio list`` against the
-    server root, which the smb-browse backend answers.
+    Blocking; call it from a worker thread. Browsing mounts the server root,
+    so a password saved in the keyring is reused and need not be retyped.
     """
-    if shutil.which("gio") is None:
-        return [], "gio not installed (install glib2 and gvfs)"
-
     unsupported = missing_backend(target.scheme)
     if unsupported:
         return [], unsupported
 
-    try:
-        proc = subprocess.run(
-            ["gio", "list", f"{target.scheme}://{target.host}/"],
-            input=_credential_input(user, domain, password, anonymous, target.scheme),
-            capture_output=True,
-            text=True,
-            timeout=LIST_TIMEOUT,
-            check=False,
-        )
-    except subprocess.TimeoutExpired:
-        return [], "Timed out waiting for the server"
-    except OSError as exc:
-        return [], str(exc)
-
-    if proc.returncode != 0:
-        detail = _last_meaningful_line(f"{proc.stdout}\n{proc.stderr}")
-        return [], detail or "could not list shares"
-
-    shares = []
-    for line in proc.stdout.splitlines():
-        # gio prints one name per line; -a would add tab-separated columns.
-        name = line.split("\t", 1)[0].strip().rstrip("/")
-        if name and not name.startswith("."):
-            shares.append(name)
-    return sorted(shares, key=str.casefold), None
+    names, error = list_children(
+        f"{target.scheme}://{target.host}/",
+        Credentials(
+            user=user,
+            domain=domain,
+            password=password,
+            anonymous=anonymous,
+            remember=remember,
+        ),
+        timeout=LIST_TIMEOUT,
+    )
+    if error:
+        return [], _explain(error, target.scheme)
+    shares = [n.strip().rstrip("/") for n in names]
+    visible = [n for n in shares if n and not n.startswith(".")]
+    return sorted(visible, key=str.casefold), None
 
 
 def unmount_server(mount_point: str) -> str | None:
@@ -479,6 +484,9 @@ class ServerStore:
             self._path.write_text(
                 json.dumps(self._uris, indent=2) + "\n", encoding="utf-8"
             )
+            # Addresses carry user names and reveal which servers exist, so
+            # keep them out of reach of other accounts on the machine.
+            self._path.chmod(0o600)
         except OSError:
             pass
 

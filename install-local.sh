@@ -49,16 +49,17 @@ echo "    Project: $ROOT"
 
 # ---------------------------------------------------------------- system deps
 #
-# Packages HyprFind needs at runtime. PyQt6 deliberately is not here: the venv
-# is isolated from system site-packages, so Qt comes from the pip wheel.
+# Packages HyprFind needs at runtime. PyQt6 deliberately is not here: Qt comes
+# from the pip wheel, which the venv prefers over any system copy.
 #
 #   glib2          gio, for network shares
+#   python-gobject GIO bindings, so GVFS can keep share passwords in the keyring
 #   udisks2        udisksctl, to mount and eject USB drives without root
 #   xdg-user-dirs  xdg-user-dir, to locate Documents/Downloads/etc.
 #   xdg-utils      xdg-open, to open files in their default application
 #   util-linux     lsblk, to discover attached drives
 #   breeze-icons   an icon theme; a bare Hyprland session provides none
-REQUIRED_PKGS=(python python-pip glib2 udisks2 xdg-user-dirs xdg-utils util-linux breeze-icons)
+REQUIRED_PKGS=(python python-pip glib2 python-gobject udisks2 xdg-user-dirs xdg-utils util-linux breeze-icons)
 
 # Needed only for Connect to Server. Without a backend, gio reports the
 # confusing "volume doesn't implement mount".
@@ -67,6 +68,17 @@ REQUIRED_PKGS=(python python-pip glib2 udisks2 xdg-user-dirs xdg-utils util-linu
 # sftp, ftp, ftps and afp backends all ship inside base gvfs, so there is no
 # gvfs-sftp or gvfs-afp to add. WebDAV has no official Arch package at all.
 NETWORK_PKGS=(gvfs gvfs-smb gvfs-nfs)
+
+# A Secret Service provider, so "Remember this password" has somewhere to put
+# the secret. Installed only when nothing already answers org.freedesktop.secrets.
+# KDE's ksecretd implements the API but registers only its own KDE bus name, so
+# D-Bus cannot start it on demand; gnome-keyring ships an activatable service.
+KEYRING_PKGS=(gnome-keyring)
+
+secret_service_reachable() {
+    command -v busctl >/dev/null 2>&1 || return 1
+    busctl --user list 2>/dev/null | grep -q "org.freedesktop.secrets"
+}
 
 # Binaries to verify afterwards, as "binary:package".
 REQUIRED_BINS=(gio:glib2 udisksctl:udisks2 xdg-user-dir:xdg-user-dirs lsblk:util-linux)
@@ -107,6 +119,12 @@ if [[ $INSTALL_DEPS -eq 1 ]]; then
         if [[ $INSTALL_NETWORK -eq 1 ]]; then
             echo "==> Network share packages (skip with --minimal)"
             install_pacman_packages "${NETWORK_PKGS[@]}" || true
+            if secret_service_reachable; then
+                echo "==> Keyring already available; leaving it alone"
+            else
+                echo "==> Keyring, so saved share passwords survive a reboot"
+                install_pacman_packages "${KEYRING_PKGS[@]}" || true
+            fi
         fi
     else
         echo "==> Not an Arch-based system; skipping package installation."
@@ -126,9 +144,16 @@ fi
 
 # ---------------------------------------------------------------------- python
 
+# --system-site-packages is required: python-gobject ships no usable wheel, so
+# gi has to come from the distro package. The venv still prefers its own copy of
+# anything pip installed, so PyQt6 is unaffected.
 if [[ ! -d "$VENV" ]]; then
     echo "==> Creating virtualenv"
-    python3 -m venv "$VENV"
+    python3 -m venv --system-site-packages "$VENV"
+elif grep -q "^include-system-site-packages = false" "$VENV/pyvenv.cfg" 2>/dev/null; then
+    echo "==> Letting the existing virtualenv see system packages (needs gi)"
+    sed -i "s/^include-system-site-packages = false/include-system-site-packages = true/" \
+        "$VENV/pyvenv.cfg"
 fi
 
 echo "==> Installing package into venv"

@@ -3,9 +3,9 @@
 from hyprfind.core.servers import (
     PROTOCOLS,
     ServerStore,
-    _credential_input,
     _last_meaningful_line,
     build_server_uri,
+    credentials_in_uri,
     list_shares,
     missing_backend,
     mounted_share_names,
@@ -139,20 +139,42 @@ def test_build_rejects_an_empty_location():
     assert build_server_uri("smb", "  /  ") == ""
 
 
-def test_domain_answer_only_sent_to_smb():
-    """A stray domain line would shift gio's later answers out of step."""
-    smb = _credential_input("kweber", "WORKGROUP", "secret", False, "smb")
-    assert smb.split("\n")[:3] == ["kweber", "WORKGROUP", "secret"]
-
-    sftp = _credential_input("kweber", "WORKGROUP", "secret", False, "sftp")
-    assert sftp.split("\n")[:2] == ["kweber", "secret"]
-    assert "WORKGROUP" not in sftp
+def test_a_pasted_password_is_never_stored():
+    """Recent servers are written to disk, so a URI password must not survive."""
+    stored = normalize_server_uri("smb://alice:PLACEHOLDER@nas/media")
+    assert stored == "smb://alice@nas/media"
+    assert "PLACEHOLDER" not in stored
 
 
-def test_guest_and_credential_free_protocols():
-    assert _credential_input("u", "d", "p", True, "smb") == "\n\n\n\n"
-    # NFS never prompts, so nothing should be piped at it.
-    assert _credential_input("u", "d", "p", False, "nfs") == "\n"
+def test_the_pasted_password_is_handed_back_for_the_password_field():
+    assert credentials_in_uri("smb://alice:PLACEHOLDER@nas/media") == (
+        "alice",
+        "PLACEHOLDER",
+    )
+    assert credentials_in_uri("smb://nas/media") == ("", "")
+
+
+def test_a_user_name_survives_stripping():
+    assert normalize_server_uri("smb://alice@nas/media") == "smb://alice@nas/media"
+
+
+def test_an_escaped_domain_user_is_decoded():
+    """Windows users are often pasted as DOMAIN%5Cuser."""
+    user, password = credentials_in_uri("smb://dom%5Cbob:PLACEHOLDER@nas/x")
+    assert (user, password) == ("dom\\bob", "PLACEHOLDER")
+
+
+def test_an_ipv6_literal_is_not_mistaken_for_credentials():
+    """The colons in an address must not look like a user:password split."""
+    assert normalize_server_uri("smb://[fe80::1]:445/media") == (
+        "smb://[fe80::1]:445/media"
+    )
+    assert credentials_in_uri("smb://[fe80::1]:445/media") == ("", "")
+
+
+def test_a_colon_in_the_path_is_left_alone():
+    uri = normalize_server_uri("smb://nas/share/odd:name")
+    assert uri == "smb://nas/share/odd:name"
 
 
 def test_missing_backend_names_the_package(tmp_path, monkeypatch):
@@ -272,15 +294,22 @@ def test_no_definitions_at_all_reads_as_gvfs_absent(tmp_path, monkeypatch):
     assert message is not None and "GVFS is not installed" in message
 
 
-def test_both_gio_no_backend_wordings_are_recognised():
-    """gio says "doesn't implement mount" or "Location is not mountable"."""
-    from hyprfind.core.servers import _NO_BACKEND
+def test_a_scheme_no_backend_claims_names_the_package():
+    """GIO only reports "not supported"; the advice has to be added here."""
+    from hyprfind.core.gio_mount import NO_BACKEND_ERROR
+    from hyprfind.core.servers import _explain
 
-    assert _NO_BACKEND.search("gio: smb://h: volume doesn\u2019t implement mount")
-    assert _NO_BACKEND.search("gio: dav://h/: Location is not mountable")
-    # A real connection failure must not be mistaken for a missing backend.
-    assert not _NO_BACKEND.search("Failed to mount Windows share: Permission denied")
-    assert not _NO_BACKEND.search("Could not resolve hostname")
+    message = _explain(NO_BACKEND_ERROR, "smb")
+    assert "gvfs-smb" in message and "log out" in message
+
+
+def test_other_errors_are_passed_through_untouched():
+    from hyprfind.core.servers import _explain
+
+    assert _explain("Permission denied", "smb") == "Permission denied"
+    assert _explain("Could not resolve hostname", "smb") == (
+        "Could not resolve hostname"
+    )
 
 
 # ------------------------------------------------------------- share browsing
@@ -327,61 +356,59 @@ def test_mounted_share_names_survives_a_missing_root(monkeypatch):
     assert mounted_share_names("nas") == set()
 
 
-def _fake_gio_list(monkeypatch, stdout, returncode=0, stderr=""):
-    import subprocess as sp
+def _fake_listing(monkeypatch, names, error=None):
+    """Stand in for the GIO enumeration, recording the URI it was asked for."""
+    calls: dict = {}
 
-    class Result:
-        pass
+    def fake_list_children(uri, credentials, timeout=None):
+        calls["uri"] = uri
+        calls["credentials"] = credentials
+        return names, error
 
-    def fake_run(cmd, **kwargs):
-        result = Result()
-        result.returncode = returncode
-        result.stdout = stdout
-        result.stderr = stderr
-        fake_run.cmd = cmd
-        return result
-
-    monkeypatch.setattr(sp, "run", fake_run)
-    monkeypatch.setattr("hyprfind.core.servers.shutil.which", lambda _: "/usr/bin/gio")
+    monkeypatch.setattr("hyprfind.core.servers.list_children", fake_list_children)
     monkeypatch.setattr("hyprfind.core.servers.missing_backend", lambda _: None)
-    return fake_run
+    return calls
 
 
-def test_list_shares_parses_and_sorts(monkeypatch):
-    fake = _fake_gio_list(monkeypatch, "TV Shows\nAnime\ndata\n")
+def test_list_shares_sorts_case_insensitively(monkeypatch):
+    calls = _fake_listing(monkeypatch, ["TV Shows", "Anime", "data"])
     shares, error = list_shares(parse_server_uri("smb://nas"))
     assert error is None
-    # Sorted case-insensitively so the picker reads naturally.
     assert shares == ["Anime", "data", "TV Shows"]
-    # Listing asks the server root, not the share.
-    assert fake.cmd[:2] == ["gio", "list"]
-    assert fake.cmd[2] == "smb://nas/"
+    # Listing asks the server root, not a share.
+    assert calls["uri"] == "smb://nas/"
 
 
 def test_list_shares_ignores_blank_and_hidden(monkeypatch):
-    _fake_gio_list(monkeypatch, "Anime\n\n.hidden\nData\n")
-    shares, _ = list_shares(parse_server_uri("smb://nas"))
-    assert shares == ["Anime", "Data"]
-
-
-def test_list_shares_strips_gio_columns(monkeypatch):
-    # gio list -a emits tab-separated columns; take the name only.
-    _fake_gio_list(monkeypatch, "Anime\t0\t(mountable)\nData\t0\t(mountable)\n")
+    _fake_listing(monkeypatch, ["Anime", "", ".hidden", "Data"])
     shares, _ = list_shares(parse_server_uri("smb://nas"))
     assert shares == ["Anime", "Data"]
 
 
 def test_list_shares_reports_failure(monkeypatch):
-    _fake_gio_list(monkeypatch, "", returncode=1, stderr="Password required")
+    _fake_listing(monkeypatch, [], error="Password required")
     shares, error = list_shares(parse_server_uri("smb://nas"))
     assert shares == []
     assert error == "Password required"
 
 
 def test_list_shares_reports_a_missing_backend(monkeypatch):
-    monkeypatch.setattr("hyprfind.core.servers.shutil.which", lambda _: "/usr/bin/gio")
     monkeypatch.setattr(
         "hyprfind.core.servers.missing_backend", lambda _: "Install gvfs-smb."
     )
     shares, error = list_shares(parse_server_uri("smb://nas"))
     assert shares == [] and error == "Install gvfs-smb."
+
+
+def test_browsing_asks_to_remember_by_default(monkeypatch):
+    """Browsing mounts the server root, so it must save like a mount does."""
+    calls = _fake_listing(monkeypatch, ["Anime"])
+    list_shares(parse_server_uri("smb://nas"), password="PLACEHOLDER")
+    assert calls["credentials"].remember is True
+    assert calls["credentials"].password == "PLACEHOLDER"
+
+
+def test_browsing_can_be_told_not_to_remember(monkeypatch):
+    calls = _fake_listing(monkeypatch, ["Anime"])
+    list_shares(parse_server_uri("smb://nas"), remember=False)
+    assert calls["credentials"].remember is False

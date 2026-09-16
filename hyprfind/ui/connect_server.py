@@ -24,11 +24,13 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
 )
 
+from hyprfind.core.gio_mount import keyring_available
 from hyprfind.core.servers import (
     PROTOCOLS,
     ServerStore,
     ServerTarget,
     build_server_uri,
+    credentials_in_uri,
     list_shares,
     missing_backend,
     mount_server,
@@ -49,6 +51,7 @@ class _MountWorker(QObject):
         domain: str,
         password: str,
         anonymous: bool,
+        remember: bool = True,
     ) -> None:
         super().__init__()
         self._target = target
@@ -56,6 +59,7 @@ class _MountWorker(QObject):
         self._domain = domain
         self._password = password
         self._anonymous = anonymous
+        self._remember = remember
 
     def run(self) -> None:
         point, error = mount_server(
@@ -64,6 +68,7 @@ class _MountWorker(QObject):
             domain=self._domain,
             password=self._password,
             anonymous=self._anonymous,
+            remember=self._remember,
         )
         self.finished.emit(point, error)
 
@@ -80,6 +85,7 @@ class _ListWorker(QObject):
         domain: str,
         password: str,
         anonymous: bool,
+        remember: bool = True,
     ) -> None:
         super().__init__()
         self._target = target
@@ -87,6 +93,7 @@ class _ListWorker(QObject):
         self._domain = domain
         self._password = password
         self._anonymous = anonymous
+        self._remember = remember
 
     def run(self) -> None:
         shares, error = list_shares(
@@ -95,6 +102,7 @@ class _ListWorker(QObject):
             domain=self._domain,
             password=self._password,
             anonymous=self._anonymous,
+            remember=self._remember,
         )
         self.finished.emit(shares, error)
 
@@ -151,6 +159,28 @@ class ConnectServerDialog(QDialog):
         self._password = QLineEdit()
         self._password.setEchoMode(QLineEdit.EchoMode.Password)
         form.addRow("Password:", self._password)
+        self._remember = QCheckBox("Remember this password in my keyring")
+        self._remember.setChecked(True)
+        self._remember.setToolTip(
+            "GVFS stores the password in the system keyring and reuses it, "
+            "so this server will not ask again."
+        )
+        form.addRow(self._remember)
+
+        # Offering to remember a password with no keyring running would be a
+        # promise nothing can keep, so say so instead.
+        self._has_keyring = keyring_available()
+        self._keyring_note = QLabel(
+            "No keyring is running, so passwords cannot be saved. Start "
+            "ksecretd (from kwallet), or install gnome-keyring."
+        )
+        self._keyring_note.setObjectName("transferDetail")
+        self._keyring_note.setWordWrap(True)
+        form.addRow(self._keyring_note)
+        if self._has_keyring:
+            self._keyring_note.setVisible(False)
+        else:
+            self._remember.setChecked(False)
         layout.addWidget(self._credentials)
 
         recent_label = QLabel("Recent Servers")
@@ -233,6 +263,13 @@ class ConnectServerDialog(QDialog):
                 self._protocol.blockSignals(True)
                 self._protocol.setCurrentIndex(index)
                 self._protocol.blockSignals(False)
+            # split_server_uri drops any password so it never reaches the
+            # recent list; move it to the field where it belongs.
+            user, password = credentials_in_uri(text)
+            if password:
+                self._password.setText(password)
+            if user and not self._user.text().strip():
+                self._user.setText(user)
             self._address.blockSignals(True)
             self._address.setText(location)
             self._address.blockSignals(False)
@@ -259,6 +296,9 @@ class ConnectServerDialog(QDialog):
         anonymous = self._anonymous.isChecked()
         for widget in (self._user, self._domain, self._password):
             widget.setEnabled(not anonymous)
+        # A guest connection has no password worth keeping, and neither is there
+        # anywhere to keep one without a keyring.
+        self._remember.setEnabled(not anonymous and self._has_keyring)
 
         uri = self._current_uri()
         warning = missing_backend(protocol.scheme)
@@ -301,6 +341,7 @@ class ConnectServerDialog(QDialog):
             self._domain.text().strip() if protocol.domain else "",
             self._password.text(),
             self._anonymous.isChecked(),
+            self._remember.isChecked(),
         )
 
         # No share named on a browsable protocol: ask the server what it has
@@ -346,6 +387,7 @@ class ConnectServerDialog(QDialog):
             domain=self._domain.text().strip() if protocol.domain else "",
             password=self._password.text(),
             anonymous=self._anonymous.isChecked(),
+            remember=self._remember.isChecked(),
             parent=self,
         )
         if picker.exec() != QDialog.DialogCode.Accepted:

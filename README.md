@@ -17,9 +17,10 @@ Finder-quality list-view file manager for Hyprland/Linux, built with PyQt6.
 - **Recursive search** (Ctrl+Shift+F) on a background thread, with a results
   view showing where each hit lives; supports `*` and `?` wildcards
 - **Smart folders** — saved searches with a full editor, reorderable and rerunnable
-- **Connect to Server** for SMB/SFTP/FTP/NFS/AFP, with credentials and a
-  recent-servers list. Enter a bare SMB host and it lists the server's shares
-  to pick from, greying out the ones already mounted
+- **Connect to Server** for SMB/SFTP/FTP/NFS/AFP, with a recent-servers list and
+  passwords saved to the system keyring by GVFS so a known server stops asking.
+  Enter a bare SMB host and it lists the server's shares to pick from, greying
+  out the ones already mounted
 - **Group By** kind, date modified, size, or name, with headings in the list
 - **Tags** written to `user.xdg.tags`, so Dolphin and Nautilus see them too;
   colour dots appear beside filenames
@@ -59,12 +60,14 @@ package list for you to translate.
 | Package | Needed for |
 |---------|-----------|
 | `glib2` | the `gio` command, used for network shares. There is no package called `gio` |
+| `python-gobject` | the GIO bindings, so GVFS can keep share passwords in your keyring |
 | `udisks2` | `udisksctl`, to mount and eject USB drives without root |
 | `util-linux` | `lsblk`, to discover attached drives |
 | `xdg-user-dirs` | locating Documents / Downloads / etc. |
 | `xdg-utils` | `xdg-open`, to open files in their default app |
 | `breeze-icons` | an icon theme |
 | `gvfs`, `gvfs-smb`, `gvfs-nfs` | **Connect to Server**; optional |
+| `gnome-keyring` | somewhere to save share passwords, installed only if nothing else provides one |
 
 Only SMB and NFS have their own packages. The SFTP, FTP, FTPS and AFP backends
 all ship inside base `gvfs`, so there is no `gvfs-sftp` or `gvfs-afp` to add.
@@ -81,11 +84,41 @@ Three of those matter more than they look:
   theme on its own and the sidebar and file list render without icons. HyprFind
   points Qt at the system theme directories and prefers `breeze-dark`, falling
   back to `Adwaita` then `hicolor`.
-- **`gvfs` / `gvfs-smb`** — without a backend, `gio` refuses every mount with
-  the unhelpful "volume doesn't implement mount". HyprFind detects this and
-  names the missing package instead, but it still cannot mount anything until
-  the backend is installed. After installing, log out and back in so the
-  session picks up the gvfs daemon.
+- **`gvfs` / `gvfs-smb`** — without a backend, mounting fails with the
+  unhelpful "volume doesn't implement mount". HyprFind detects this and names
+  the missing package instead, but it still cannot mount anything until the
+  backend is installed. After installing, log out and back in so the session
+  picks up the gvfs daemon.
+- **`python-gobject`** — HyprFind mounts through the GIO API rather than the
+  `gio` command, because only the API can ask GVFS to save a password. This is
+  the one dependency the venv takes from the system, since PyGObject has no
+  usable wheel, so the venv is created with `--system-site-packages`.
+
+### Where share passwords are kept
+
+**Connect to Server** offers *Remember this password in my keyring*, checked by
+default. Ticking it asks GVFS to save the password permanently, which stores it
+through the Secret Service API — the same keyring GNOME and KDE use. HyprFind
+never writes the password itself and never keeps a copy: GVFS hands it back on
+later mounts, so a known server stops asking, and browsing a server's shares
+stops asking too.
+
+This needs something on the session bus answering `org.freedesktop.secrets`. A
+bare Hyprland session often has nothing: KDE's `ksecretd` implements the API but
+registers only its own KDE bus name, so D-Bus cannot start it on demand, and
+`secret-tool` reports "The name is not activatable". When no keyring can be
+reached the checkbox is greyed out and says so, rather than promising to
+remember something that would be dropped. Two ways to fix it:
+
+- Install `gnome-keyring`, which ships a D-Bus-activatable service and starts on
+  demand. `install-local.sh` does this for you when nothing else answers.
+- Or autostart the keyring you already have, by adding
+  `exec-once = /usr/bin/ksecretd` to your Hyprland config.
+
+Recent server addresses live in `~/.config/hyprfind/servers.json`, which holds
+host names and user names only, never a password, and is written `0600`. Pasting
+a URI that embeds a password moves the password into the dialog's password field
+so it is not stored.
 
 PyQt6 is deliberately not in that list: the venv is isolated from system
 site-packages, so Qt comes from the pip wheel rather than `python-pyqt6`.

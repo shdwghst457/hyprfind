@@ -44,6 +44,7 @@ class _MountWorker(QObject):
         domain: str,
         password: str,
         anonymous: bool,
+        remember: bool = True,
     ) -> None:
         super().__init__()
         self._host = host
@@ -53,6 +54,7 @@ class _MountWorker(QObject):
         self._domain = domain
         self._password = password
         self._anonymous = anonymous
+        self._remember = remember
 
     def run(self) -> None:
         first: str | None = None
@@ -69,6 +71,7 @@ class _MountWorker(QObject):
                 domain=self._domain,
                 password=self._password,
                 anonymous=self._anonymous,
+                remember=self._remember,
             )
             if error:
                 errors.append(f"{share}: {error}")
@@ -90,6 +93,7 @@ class SharePickerDialog(QDialog):
         domain: str = "",
         password: str = "",
         anonymous: bool = False,
+        remember: bool = True,
         parent=None,
     ) -> None:
         super().__init__(parent)
@@ -102,6 +106,7 @@ class SharePickerDialog(QDialog):
         self._domain = domain
         self._password = password
         self._anonymous = anonymous
+        self._remember = remember
         self.mount_point: str | None = None
         self.partial_error: str | None = None
         self._thread: QThread | None = None
@@ -200,6 +205,7 @@ class SharePickerDialog(QDialog):
             self._domain,
             self._password,
             self._anonymous,
+            self._remember,
         )
         self._worker.moveToThread(self._thread)
         self._thread.started.connect(self._worker.run)
