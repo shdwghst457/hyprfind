@@ -29,12 +29,14 @@ from hyprfind.core.servers import (
     ServerStore,
     ServerTarget,
     build_server_uri,
+    list_shares,
     missing_backend,
     mount_server,
     parse_server_uri,
     protocol_for,
     split_server_uri,
 )
+from hyprfind.ui.share_picker import SharePickerDialog
 
 
 class _MountWorker(QObject):
@@ -66,6 +68,37 @@ class _MountWorker(QObject):
         self.finished.emit(point, error)
 
 
+class _ListWorker(QObject):
+    """Asks the server which shares it offers."""
+
+    finished = pyqtSignal(object, object)  # shares, error
+
+    def __init__(
+        self,
+        target: ServerTarget,
+        user: str,
+        domain: str,
+        password: str,
+        anonymous: bool,
+    ) -> None:
+        super().__init__()
+        self._target = target
+        self._user = user
+        self._domain = domain
+        self._password = password
+        self._anonymous = anonymous
+
+    def run(self) -> None:
+        shares, error = list_shares(
+            self._target,
+            user=self._user,
+            domain=self._domain,
+            password=self._password,
+            anonymous=self._anonymous,
+        )
+        self.finished.emit(shares, error)
+
+
 class ConnectServerDialog(QDialog):
     """Collects a share address plus credentials, then mounts it."""
 
@@ -77,6 +110,7 @@ class ConnectServerDialog(QDialog):
 
         self._store = store
         self.mount_point: str | None = None
+        self.partial_error: str | None = None
         self._thread: QThread | None = None
         self._worker: _MountWorker | None = None
 
@@ -228,14 +262,22 @@ class ConnectServerDialog(QDialog):
 
         uri = self._current_uri()
         warning = missing_backend(protocol.scheme)
+        target = parse_server_uri(uri) if uri else None
         if warning:
             self._hint.setText(warning)
+        elif target is not None and self._will_browse(protocol, target):
+            self._hint.setText(f"Will list the shares on {target.host}")
         elif uri:
             self._hint.setText(f"Will connect to {uri}")
         else:
             self._hint.setText(f"Enter a {protocol.label} address.")
 
         self._connect_button.setEnabled(bool(uri) and self._thread is None)
+
+    @staticmethod
+    def _will_browse(protocol, target: ServerTarget) -> bool:
+        """A bare host on a browsable protocol means "show me the shares"."""
+        return protocol.browsable and not target.share
 
     # ------------------------------------------------------------------ mounting
 
@@ -253,21 +295,71 @@ class ConnectServerDialog(QDialog):
             )
             return
 
-        self._status.setText(f"Connecting to {target.display_name}…")
         self._connect_button.setEnabled(False)
-
-        self._thread = QThread(self)
-        self._worker = _MountWorker(
-            target,
+        credentials = (
             self._user.text().strip(),
             self._domain.text().strip() if protocol.domain else "",
             self._password.text(),
             self._anonymous.isChecked(),
         )
+
+        # No share named on a browsable protocol: ask the server what it has
+        # and let the user choose, rather than requiring them to guess.
+        if self._will_browse(protocol, target):
+            self._status.setText(f"Listing shares on {target.host}…")
+            self._thread = QThread(self)
+            self._worker = _ListWorker(target, *credentials)
+            self._worker.moveToThread(self._thread)
+            self._thread.started.connect(self._worker.run)
+            self._worker.finished.connect(
+                lambda shares, error: self._on_listed(target, shares, error)
+            )
+            self._thread.start()
+            return
+
+        self._status.setText(f"Connecting to {target.display_name}…")
+        self._thread = QThread(self)
+        self._worker = _MountWorker(target, *credentials)
         self._worker.moveToThread(self._thread)
         self._thread.started.connect(self._worker.run)
-        self._worker.finished.connect(lambda point, error: self._on_mounted(target, point, error))
+        self._worker.finished.connect(
+            lambda point, error: self._on_mounted(target, point, error)
+        )
         self._thread.start()
+
+    def _on_listed(self, target: ServerTarget, shares, error) -> None:
+        self._join_thread()
+        if error:
+            self._status.setText("" if error == self._hint.text() else error)
+            self._update_enabled()
+            return
+        if not shares:
+            self._status.setText(f"{target.host} offers no shares.")
+            self._update_enabled()
+            return
+
+        protocol = self._current_protocol()
+        picker = SharePickerDialog(
+            target,
+            shares,
+            user=self._user.text().strip(),
+            domain=self._domain.text().strip() if protocol.domain else "",
+            password=self._password.text(),
+            anonymous=self._anonymous.isChecked(),
+            parent=self,
+        )
+        if picker.exec() != QDialog.DialogCode.Accepted:
+            self._status.setText("")
+            self._update_enabled()
+            return
+
+        self.mount_point = picker.mount_point
+        # Some shares can mount while others fail; say so rather than looking
+        # like everything worked.
+        self.partial_error = picker.partial_error
+        # Remember the host, so next time the share list is one click away.
+        self._store.push(target.uri)
+        self.accept()
 
     def _on_mounted(self, target: ServerTarget, point, error) -> None:
         self._join_thread()

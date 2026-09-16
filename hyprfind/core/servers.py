@@ -40,11 +40,20 @@ class Protocol:
     credentials: bool = True
     domain: bool = False
     packaged: bool = True
+    # SMB exposes a list of shares under the host; sftp and ftp expose one
+    # filesystem, so there is nothing to choose from.
+    browsable: bool = False
 
 
 PROTOCOLS: tuple[Protocol, ...] = (
     Protocol(
-        "smb", "SMB / Windows share", "server/share", "smb", "gvfs-smb", domain=True
+        "smb",
+        "SMB / Windows share",
+        "server, or server/share",
+        "smb",
+        "gvfs-smb",
+        domain=True,
+        browsable=True,
     ),
     Protocol("sftp", "SFTP (SSH)", "server", "sftp"),
     Protocol("ftp", "FTP", "server", "ftp"),
@@ -345,6 +354,77 @@ def mount_server(
             f"answered. Install {protocol.package}, then log out and back in."
         )
     return None, detail
+
+
+_SMB_MOUNT_DIR = re.compile(r"^smb-share:server=(?P<server>[^,]+),share=(?P<share>.+)$")
+
+LIST_TIMEOUT = 30.0
+
+
+def mounted_share_names(host: str) -> set[str]:
+    """Share names already mounted from ``host``, casefolded.
+
+    GVFS names its directories ``smb-share:server=host,share=name`` and
+    lowercases both parts, so compare casefolded.
+    """
+    try:
+        entries = os.listdir(_gvfs_root())
+    except OSError:
+        return set()
+    wanted = host.casefold()
+    found: set[str] = set()
+    for name in entries:
+        match = _SMB_MOUNT_DIR.match(name)
+        if match and match.group("server").casefold() == wanted:
+            found.add(match.group("share").casefold())
+    return found
+
+
+def list_shares(
+    target: ServerTarget,
+    *,
+    user: str = "",
+    domain: str = "",
+    password: str = "",
+    anonymous: bool = False,
+) -> tuple[list[str], str | None]:
+    """List the shares a server offers. Returns ``(shares, error)``.
+
+    Blocking; call it from a worker thread. Uses ``gio list`` against the
+    server root, which the smb-browse backend answers.
+    """
+    if shutil.which("gio") is None:
+        return [], "gio not installed (install glib2 and gvfs)"
+
+    unsupported = missing_backend(target.scheme)
+    if unsupported:
+        return [], unsupported
+
+    try:
+        proc = subprocess.run(
+            ["gio", "list", f"{target.scheme}://{target.host}/"],
+            input=_credential_input(user, domain, password, anonymous, target.scheme),
+            capture_output=True,
+            text=True,
+            timeout=LIST_TIMEOUT,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return [], "Timed out waiting for the server"
+    except OSError as exc:
+        return [], str(exc)
+
+    if proc.returncode != 0:
+        detail = _last_meaningful_line(f"{proc.stdout}\n{proc.stderr}")
+        return [], detail or "could not list shares"
+
+    shares = []
+    for line in proc.stdout.splitlines():
+        # gio prints one name per line; -a would add tab-separated columns.
+        name = line.split("\t", 1)[0].strip().rstrip("/")
+        if name and not name.startswith("."):
+            shares.append(name)
+    return sorted(shares, key=str.casefold), None
 
 
 def unmount_server(mount_point: str) -> str | None:

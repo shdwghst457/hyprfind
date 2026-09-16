@@ -489,6 +489,17 @@ Aesthetic regressions are easy to miss, so check these deliberately.
 | 25.23 | WebDAV honesty | Choose WebDAV | Says it is not packaged on Arch; no invented `gvfs-dav` | |
 | 25.24 | No duplicate error | Trigger a missing-backend error | Message appears once, not in both the hint and the status line | |
 | 25.25 | Per-protocol packages | Choose NFS without `gvfs-nfs` | Names `gvfs-nfs`; SFTP/AFP name plain `gvfs` | |
+| 25.26 | Browse a bare host | Enter `172.16.0.47` with no share, Connect | Share picker lists the server's shares | |
+| 25.27 | Hint says browse | Type a host with no share | Hint reads "Will list the shares on &lt;host&gt;" | |
+| 25.28 | Mounted shares greyed | Mount one share, reconnect to the host | That share is grey and cannot be selected | |
+| 25.29 | Explicit share skips picker | Enter `host/Anime` | Mounts directly, no picker | |
+| 25.30 | Multi-select | Ctrl-click several shares, Mount | All mount; pane opens the first | |
+| 25.31 | Double-click to mount | Double-click a share | Mounts it without using the button | |
+| 25.32 | All already mounted | Reconnect when every share is mounted | Says so; Mount stays disabled | |
+| 25.33 | Cancel the picker | Press Cancel | Nothing mounts; Connect dialog stays usable | |
+| 25.34 | Picker stays live | Mount a large/slow share | Dialog responsive, status shows "Mounting &lt;share&gt;…" | |
+| 25.35 | Partial failure | Select one allowed and one forbidden share | Navigates to the good one; status names the failure | |
+| 25.36 | Non-browsable protocol | Choose SFTP with a bare host | Mounts directly; no picker (one filesystem, nothing to pick) | |
 
 ---
 

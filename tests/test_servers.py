@@ -6,7 +6,9 @@ from hyprfind.core.servers import (
     _credential_input,
     _last_meaningful_line,
     build_server_uri,
+    list_shares,
     missing_backend,
+    mounted_share_names,
     supported_schemes,
     normalize_server_uri,
     parse_server_uri,
@@ -279,3 +281,107 @@ def test_both_gio_no_backend_wordings_are_recognised():
     # A real connection failure must not be mistaken for a missing backend.
     assert not _NO_BACKEND.search("Failed to mount Windows share: Permission denied")
     assert not _NO_BACKEND.search("Could not resolve hostname")
+
+
+# ------------------------------------------------------------- share browsing
+
+
+def test_only_smb_is_browsable():
+    """sftp and ftp expose one filesystem, so there is nothing to pick."""
+    assert [p.scheme for p in PROTOCOLS if p.browsable] == ["smb"]
+
+
+def test_bare_host_leaves_the_share_empty():
+    # An empty share is what tells the dialog to list instead of mount.
+    assert parse_server_uri("smb://172.16.0.47").share == ""
+    assert parse_server_uri("smb://172.16.0.47/Anime").share == "Anime"
+
+
+def test_mounted_share_names_parses_gvfs_dirs(tmp_path, monkeypatch):
+    for name in (
+        "smb-share:server=172.16.0.47,share=data",
+        "smb-share:server=172.16.0.47,share=tv shows",
+        "smb-share:server=other.host,share=backup",
+        "sftp:host=buildbox",
+        "not-a-mount",
+    ):
+        (tmp_path / name).mkdir()
+    monkeypatch.setattr("hyprfind.core.servers._gvfs_root", lambda: str(tmp_path))
+
+    names = mounted_share_names("172.16.0.47")
+    assert names == {"data", "tv shows"}
+    # Other hosts must not bleed in.
+    assert mounted_share_names("other.host") == {"backup"}
+    assert mounted_share_names("nothing.here") == set()
+
+
+def test_mounted_share_names_is_case_insensitive(tmp_path, monkeypatch):
+    (tmp_path / "smb-share:server=nas,share=data").mkdir()
+    monkeypatch.setattr("hyprfind.core.servers._gvfs_root", lambda: str(tmp_path))
+    # GVFS lowercases, but the server reports "Data".
+    assert "Data".casefold() in mounted_share_names("NAS")
+
+
+def test_mounted_share_names_survives_a_missing_root(monkeypatch):
+    monkeypatch.setattr("hyprfind.core.servers._gvfs_root", lambda: "/nonexistent")
+    assert mounted_share_names("nas") == set()
+
+
+def _fake_gio_list(monkeypatch, stdout, returncode=0, stderr=""):
+    import subprocess as sp
+
+    class Result:
+        pass
+
+    def fake_run(cmd, **kwargs):
+        result = Result()
+        result.returncode = returncode
+        result.stdout = stdout
+        result.stderr = stderr
+        fake_run.cmd = cmd
+        return result
+
+    monkeypatch.setattr(sp, "run", fake_run)
+    monkeypatch.setattr("hyprfind.core.servers.shutil.which", lambda _: "/usr/bin/gio")
+    monkeypatch.setattr("hyprfind.core.servers.missing_backend", lambda _: None)
+    return fake_run
+
+
+def test_list_shares_parses_and_sorts(monkeypatch):
+    fake = _fake_gio_list(monkeypatch, "TV Shows\nAnime\ndata\n")
+    shares, error = list_shares(parse_server_uri("smb://nas"))
+    assert error is None
+    # Sorted case-insensitively so the picker reads naturally.
+    assert shares == ["Anime", "data", "TV Shows"]
+    # Listing asks the server root, not the share.
+    assert fake.cmd[:2] == ["gio", "list"]
+    assert fake.cmd[2] == "smb://nas/"
+
+
+def test_list_shares_ignores_blank_and_hidden(monkeypatch):
+    _fake_gio_list(monkeypatch, "Anime\n\n.hidden\nData\n")
+    shares, _ = list_shares(parse_server_uri("smb://nas"))
+    assert shares == ["Anime", "Data"]
+
+
+def test_list_shares_strips_gio_columns(monkeypatch):
+    # gio list -a emits tab-separated columns; take the name only.
+    _fake_gio_list(monkeypatch, "Anime\t0\t(mountable)\nData\t0\t(mountable)\n")
+    shares, _ = list_shares(parse_server_uri("smb://nas"))
+    assert shares == ["Anime", "Data"]
+
+
+def test_list_shares_reports_failure(monkeypatch):
+    _fake_gio_list(monkeypatch, "", returncode=1, stderr="Password required")
+    shares, error = list_shares(parse_server_uri("smb://nas"))
+    assert shares == []
+    assert error == "Password required"
+
+
+def test_list_shares_reports_a_missing_backend(monkeypatch):
+    monkeypatch.setattr("hyprfind.core.servers.shutil.which", lambda _: "/usr/bin/gio")
+    monkeypatch.setattr(
+        "hyprfind.core.servers.missing_backend", lambda _: "Install gvfs-smb."
+    )
+    shares, error = list_shares(parse_server_uri("smb://nas"))
+    assert shares == [] and error == "Install gvfs-smb."

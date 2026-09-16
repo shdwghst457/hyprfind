@@ -17,8 +17,9 @@ Finder-quality list-view file manager for Hyprland/Linux, built with PyQt6.
 - **Recursive search** (Ctrl+Shift+F) on a background thread, with a results
   view showing where each hit lives; supports `*` and `?` wildcards
 - **Smart folders** — saved searches with a full editor, reorderable and rerunnable
-- **Connect to Server** for SMB/SFTP/FTP/NFS/WebDAV, with credentials and a
-  recent-servers list
+- **Connect to Server** for SMB/SFTP/FTP/NFS/AFP, with credentials and a
+  recent-servers list. Enter a bare SMB host and it lists the server's shares
+  to pick from, greying out the ones already mounted
 - **Group By** kind, date modified, size, or name, with headings in the list
 - **Tags** written to `user.xdg.tags`, so Dolphin and Nautilus see them too;
   colour dots appear beside filenames

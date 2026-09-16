@@ -1100,7 +1100,11 @@ class MainWindow(QMainWindow):
         self._mount_service.reload(force=True)
         self._sidebar.reload()
         self.navigate_to(point, push_history=True)
-        self._show_status(f"Connected to {os.path.basename(point) or point}")
+        name = os.path.basename(point) or point
+        if dialog.partial_error:
+            self._show_status(f"Connected to {name}, but {dialog.partial_error}")
+        else:
+            self._show_status(f"Connected to {name}")
 
     def _update_trash_ui(self, path: str) -> None:
         in_trash = is_trash_directory(path)
