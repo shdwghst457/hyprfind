@@ -157,8 +157,9 @@ directly:
 |-----|--------|
 | ↑/↓ | Move selection |
 | → / ← | Expand / collapse folder |
-| Enter | Open file or enter folder |
+| Return | Rename (extension stays unselected) |
 | F2 | Rename |
+| Alt+↓ or Ctrl+O | Open file or enter folder |
 | Delete | Move to Trash |
 | Shift+Delete | Delete permanently |
 | Backspace | Go to parent directory |

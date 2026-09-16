@@ -102,9 +102,9 @@ Hyprland session.
 | 3.6 | Go menu | Go → each default favorite | Navigates | |
 | 3.7 | Recent folders | Visit several folders; Go → Recent Folders | Recently visited paths listed | |
 | 3.8 | Connect to server | Go → Connect to Server (smb://…) | gio mount invoked; status message | |
-| 3.9 | Enter on folder | Select folder, Enter | Enters folder (does not only expand inline) | |
-| 3.10 | Enter on file | Select file, Enter | Opens with xdg-open | |
-| 3.11 | Double-click | Double-click folder/file | Same as Enter | |
+| 3.9 | Open folder | Select folder, Alt+Down (or Ctrl+O) | Enters folder (does not only expand inline) | |
+| 3.10 | Open file | Select file, Alt+Down (or Ctrl+O) | Opens with xdg-open | |
+| 3.11 | Double-click | Double-click folder/file | Same as Alt+Down | |
 | 3.12 | Arrow expand | → on closed folder row | Expands inline (disclosure triangle) | |
 | 3.13 | Arrow collapse | ← on expanded row | Collapses | |
 | 3.14 | Type-ahead | Type first letters of a filename | Selection jumps to match | |
@@ -179,9 +179,16 @@ Hyprland session.
 
 | # | Test | Steps | Expected | Result |
 |---|------|-------|----------|--------|
-| 8.1 | New folder | Ctrl+Shift+N | “untitled folder” created; rename if Finder-like | |
-| 8.2 | New folder w/ selection | Ctrl+Alt+N with files selected | New folder containing items | |
-| 8.3 | Rename | F2 on one selection | Inline rename | |
+| 8.1 | New folder | Ctrl+Shift+N | “untitled folder” created, name preselected | |
+| 8.2 | New folder w/ selection | Ctrl+Alt+N with files selected | New folder containing items; “New Folder With Items” preselected so typing replaces it | |
+| 8.3 | Rename | F2 or Return on one selection | Inline rename | |
+| 8.3a | Return renames, never opens | Select a file, press Return | Rename editor opens; the file is **not** launched | |
+| 8.3b | Extension preserved | Return on `report.tar.gz` | Only `report.tar` is highlighted; typing keeps `.gz` | |
+| 8.3c | Folder name fully selected | Return on a folder | Whole name highlighted | |
+| 8.3d | Dotfile fully selected | Return on `.bashrc` | Whole name highlighted (not an empty selection) | |
+| 8.3e | Commit rename | Return, type a name, Return again | Renamed on disk; editor closes | |
+| 8.3f | Multi-selection | Select two items, press Return | Nothing happens (no rename, nothing opened) | |
+| 8.3g | Selection survives refresh | Ctrl+Alt+N, wait a second without typing | Name still highlighted after the folder refresh | |
 | 8.4 | Move to Trash | Delete key | Item in Trash; undo available | |
 | 8.5 | Permanent delete | Shift+Delete (not in Trash) | Confirm if enabled; file gone | |
 | 8.6 | Cut / Copy / Paste | Ctrl+X, Ctrl+C, Ctrl+V | File moved/copied | |

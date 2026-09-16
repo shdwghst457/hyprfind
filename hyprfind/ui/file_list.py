@@ -571,20 +571,23 @@ class FileListView(QTreeView):
             event.accept()
             return
         if key == Qt.Key.Key_F2:
-            if len(self.selected_paths()) == 1:
-                for index in self.selectedIndexes():
-                    if index.column() == 0:
-                        self._start_inline_rename(index)
-                        break
+            self._rename_current()
             event.accept()
             return
         if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
             if self.state() == QAbstractItemView.State.EditingState:
                 super().keyPressEvent(event)
                 return
-            for path in self.selected_paths():
-                self._activate_path(path)
-                break
+            # Return renames, as in Finder. Alt+Down and Ctrl+O open.
+            self._rename_current()
+            event.accept()
+            return
+        if key == Qt.Key.Key_Down and alt:
+            self._open_current()
+            event.accept()
+            return
+        if key == Qt.Key.Key_O and ctrl:
+            self._open_current()
             event.accept()
             return
         if key in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace) and shift:
@@ -1149,6 +1152,20 @@ class FileListView(QTreeView):
         source = self._source_index(index.siblingAtColumn(0))
         self._activate_path(self._model.filePath(source))
 
+    def _rename_current(self) -> None:
+        """Rename the selected item. Renaming several at once is not supported."""
+        if len(self.selected_paths()) != 1:
+            return
+        for index in self.selectedIndexes():
+            if index.column() == 0:
+                self._start_inline_rename(index)
+                return
+
+    def _open_current(self) -> None:
+        for path in self.selected_paths():
+            self._activate_path(path)
+            return
+
     def _activate_path(self, path: str) -> None:
         if os.path.isdir(path):
             self.pathActivated.emit(path)
@@ -1308,8 +1325,17 @@ class FileListView(QTreeView):
             )
 
             open_action = QAction("Open", self)
+            # Shown for discoverability; keyPressEvent does the handling.
+            open_action.setShortcut("Alt+Down")
+            open_action.setShortcutVisibleInContextMenu(True)
             open_action.triggered.connect(lambda: self._activate_path(path))
             menu.addAction(open_action)
+
+            rename_action = QAction("Rename", self)
+            rename_action.setShortcut("Return")
+            rename_action.setShortcutVisibleInContextMenu(True)
+            rename_action.triggered.connect(self._rename_current)
+            menu.addAction(rename_action)
 
             if os.path.isdir(path):
                 new_tab_action = QAction("Open in New Tab", self)

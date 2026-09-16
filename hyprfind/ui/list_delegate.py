@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
-from PyQt6.QtCore import QRect, Qt
-from PyQt6.QtGui import QColor, QFont, QPainter, QPen
-from PyQt6.QtWidgets import QStyledItemDelegate, QStyleOptionViewItem
+import os
+
+from PyQt6.QtCore import QRect, Qt, QTimer
+from PyQt6.QtGui import QColor, QFileSystemModel, QFont, QPainter, QPen
+from PyQt6.QtWidgets import QLineEdit, QStyledItemDelegate, QStyleOptionViewItem
 
 from hyprfind.core.file_ops import TransferOp
 from hyprfind.core.grouping import GROUP_NONE
@@ -29,6 +31,34 @@ def _is_cut(index) -> bool:
     return False
 
 
+# Set on a rename editor once the user types, so a directory refresh that
+# re-pushes data into the editor does not fight their cursor.
+_TYPED_PROPERTY = "hyprfindUserTyped"
+
+
+def _apply_selection(editor, length: int) -> None:
+    """Select the first ``length`` characters, unless the user has begun typing."""
+    try:
+        if editor.property(_TYPED_PROPERTY) or not editor.text():
+            return
+        editor.setSelection(0, length)
+    except RuntimeError:
+        # The editor closed before the deferred call ran.
+        return
+
+
+def _rename_selection_length(index, name: str) -> int:
+    """How much of a name to preselect: the stem, or all of a folder name."""
+    if not name:
+        return 0
+    path = index.data(QFileSystemModel.Roles.FilePathRole)
+    if isinstance(path, str) and path and os.path.isdir(path):
+        return len(name)
+    stem = os.path.splitext(name)[0]
+    # A dotfile with no further extension (".bashrc") has an empty stem.
+    return len(stem) or len(name)
+
+
 GROUP_HEADER_HEIGHT = 22
 GROUP_HEADER_COLOR = QColor("#8e8e93")
 GROUP_RULE_COLOR = QColor("#3a3a3f")
@@ -43,6 +73,31 @@ class DropHighlightDelegate(QStyledItemDelegate):
     def __init__(self, view, parent=None) -> None:
         super().__init__(parent)
         self._view = view
+
+    # ------------------------------------------------------------------- editing
+
+    def createEditor(self, parent, option, index):
+        editor = super().createEditor(parent, option, index)
+        if isinstance(editor, QLineEdit):
+            # textEdited fires only for typing, never for setText, so it marks
+            # the point after which the selection must be left alone.
+            editor.textEdited.connect(
+                lambda _text, ed=editor: ed.setProperty(_TYPED_PROPERTY, True)
+            )
+        return editor
+
+    def setEditorData(self, editor, index) -> None:
+        super().setEditorData(editor, index)
+        if not isinstance(editor, QLineEdit):
+            return
+        if editor.property(_TYPED_PROPERTY):
+            return
+        # Refreshing the directory makes the view push data into the open editor
+        # again, and setText clears the selection, so it has to be reapplied.
+        # Deferred because the view selects the whole line right after this
+        # returns, which would otherwise win.
+        length = _rename_selection_length(index, editor.text())
+        QTimer.singleShot(0, lambda ed=editor: _apply_selection(ed, length))
 
     # ------------------------------------------------------------- group headers
 
