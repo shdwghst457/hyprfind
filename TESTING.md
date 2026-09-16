@@ -125,6 +125,8 @@ Hyprland session.
 | 4.8 | Reorder columns | Drag Kind header left of Size | Column order changes | |
 | 4.9 | Date formatting | Narrow Date column by dragging | Date text shortens (Today / M/d / etc.) | |
 | 4.10 | Folder sizes | Open folder with subfolders | Sizes show Calculating… then values or — on error | |
+| 4.10a | Folders past 2 GiB | Open a folder holding subfolders of 3 GB and 70 GB+ | Both match `du -sb --apparent-size`; sizes above 2 GiB used to wrap to a blank cell or a smaller wrong number | |
+| 4.10b | Sort by size | Click Size on that folder | Largest first, and the order agrees with the numbers shown | |
 | 4.11 | Selection row | Click row | Full row highlighted | |
 | 4.12 | Multi-select | Ctrl+click, Shift+click | Multiple rows selected | |
 | 4.13 | Select all | Ctrl+A | All items in current folder | |
@@ -269,6 +271,8 @@ Hyprland session.
 | 13.5 | Manual refresh | F5 / Ctrl+R / ↻ | Immediate reload | |
 | 13.6 | Folder sizes SMB | Browse large SMB folder | Sizes eventually fill; status may show calculating | |
 | 13.7 | Size cache | Revisit folder | Sizes load faster from cache | |
+| 13.8 | Multi-gigabyte shares | Compare a few folders on the share against `du -sb --apparent-size` | Every one matches, whatever its size | |
+| 13.9 | Cached sizes stay right | Revisit the same share | The instant, cached values still match `du`; none is a blank or a suspiciously small number | |
 
 ---
 
@@ -524,7 +528,6 @@ Aesthetic regressions are easy to miss, so check these deliberately.
 | 25.45 | Pasted password is not stored | Paste `smb://user:pw@host/share` | Address shows `user@host/share`, password lands in the password field | |
 | 25.46 | Nothing leaks to disk | After 25.45, connect, then read `~/.config/hyprfind/servers.json` | Host and user only, no password; file mode is `600` | |
 | 25.47 | Recent entry stays usable | Click that recent server | Reconnects using the keyring, no retyping | |
-
 ---
 
 ## 26. Persistence

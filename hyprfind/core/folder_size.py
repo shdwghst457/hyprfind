@@ -159,7 +159,9 @@ class _DirectoryScanWorker(QRunnable):
 
 
 class _FolderSizeSignals(QObject):
-    finished = pyqtSignal(str, int, str, int, bool)
+    # Sizes must cross the thread boundary as qint64: a plain `int` parameter is
+    # marshalled through a 32-bit C++ int, which silently wraps past 2 GiB.
+    finished = pyqtSignal(str, "qint64", str, int, bool)
 
 
 class _DirectoryScanSignals(QObject):
@@ -169,7 +171,7 @@ class _DirectoryScanSignals(QObject):
 class FolderSizeCalculator(QObject):
     """Idle-priority queue; yields I/O and UI time while sizes are calculated."""
 
-    sizeReady = pyqtSignal(str, int)
+    sizeReady = pyqtSignal(str, "qint64")
     sizeFailed = pyqtSignal(str)
     directoryScanned = pyqtSignal(str, list)
     queueChanged = pyqtSignal(int)
@@ -366,7 +368,7 @@ class FolderSizeCalculator(QObject):
     def _emit_directory_scanned(self, directory: str, paths: list) -> None:
         self.directoryScanned.emit(directory, paths)
 
-    @pyqtSlot(str, int, str, int, bool)
+    @pyqtSlot(str, "qint64", str, int, bool)
     def _on_finished(
         self,
         path: str,
@@ -385,11 +387,13 @@ class FolderSizeCalculator(QObject):
             self._schedule_pump()
             return
 
-        if status == SIZE_ERROR:
+        if status == SIZE_ERROR or size < 0:
+            # A negative byte count cannot happen; report it as unreadable
+            # rather than clamping it to a confident-looking "0 bytes".
             self._failed.add(path)
             self.sizeFailed.emit(path)
         else:
-            value = max(0, size)
+            value = size
             self._cache[path] = value
             if len(self._cache) > MAX_IN_MEMORY_CACHE:
                 drop = max(1, len(self._cache) // 10)

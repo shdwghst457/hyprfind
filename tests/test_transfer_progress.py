@@ -8,7 +8,7 @@ from hyprfind.core.file_ops import (
     estimate_transfer_size,
     transfer_items,
 )
-from hyprfind.ui.transfer_dialog import should_show_progress
+from hyprfind.ui.transfer_dialog import _TransferWorker, should_show_progress
 
 
 def make_tree(root, files: dict[str, int]) -> list[str]:
@@ -129,6 +129,20 @@ def test_monitor_free_path_still_works(tmp_path):
     )
     assert errors == []
     assert (dest / "src" / "sub" / "b.bin").exists()
+
+
+def test_progress_survives_transfers_over_two_gibibytes():
+    """Byte counts past 2**31 must not wrap on their way out of the worker."""
+    huge = 6 * 1024**3
+    worker = _TransferWorker(
+        [], "/tmp", TransferOp.COPY, total_bytes=huge, total_items=1, on_conflict=None
+    )
+    seen: list[tuple[int, int]] = []
+    worker.progress.connect(lambda copied, total, _name: seen.append((copied, total)))
+
+    worker.progress.emit(huge // 2, huge, "movie.mkv")
+
+    assert seen == [(huge // 2, huge)]
 
 
 def test_progress_threshold():

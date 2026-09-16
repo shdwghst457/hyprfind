@@ -48,7 +48,8 @@ def should_show_progress(total_bytes: int, total_items: int) -> bool:
 class _TransferWorker(QObject):
     """Runs one transfer_items call on a worker thread."""
 
-    progress = pyqtSignal(int, int, str)
+    # qint64, not int: byte counts above 2 GiB wrap in a 32-bit signal parameter.
+    progress = pyqtSignal("qint64", "qint64", str)
     finished = pyqtSignal(list, bool)
 
     def __init__(

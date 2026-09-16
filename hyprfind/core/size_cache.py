@@ -31,7 +31,9 @@ MAX_ENTRIES = 50_000
 
 # Bump when the meaning of stored values changes so stale files are discarded.
 # v2: only fully-completed walks are persisted (v1 could store error/partial 0s).
-CACHE_VERSION = 2
+# v3: sizes above 2 GiB were wrapped by a 32-bit signal before reaching the
+#     cache, so v2 files can hold silently wrong totals for large folders.
+CACHE_VERSION = 3
 
 
 def _dir_mtime_ns(path: str) -> int | None:
