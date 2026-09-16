@@ -103,6 +103,12 @@ never writes the password itself and never keeps a copy: GVFS hands it back on
 later mounts, so a known server stops asking, and browsing a server's shares
 stops asking too.
 
+Because nothing has to be retyped, there is otherwise no sign that a saved
+password exists. So picking a server whose password is already saved fills in the
+user name it belongs to and marks the password field as *Saved in your keyring* —
+read from the keyring entry's attributes only, never its secret. Leave the field
+empty to reuse the saved password, or type one to replace it.
+
 This needs something on the session bus answering `org.freedesktop.secrets`. A
 bare Hyprland session often has nothing: KDE's `ksecretd` implements the API but
 registers only its own KDE bus name, so D-Bus cannot start it on demand, and

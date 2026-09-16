@@ -124,6 +124,83 @@ def _default_collection_is_unlocked(bus) -> bool:
     return not locked.unpack()[0]
 
 
+@dataclass(frozen=True)
+class SavedLogin:
+    """Who the keyring already holds a password for on a given server."""
+
+    user: str = ""
+    domain: str = ""
+
+
+def saved_login(scheme: str, host: str) -> SavedLogin | None:
+    """The identity GVFS has a stored password for, or None if there is none.
+
+    Only the item's attributes are read, never the secret. The point is to tell
+    the user that a saved password exists before they press Connect; GVFS
+    supplies the password itself when the mount runs, so the app never needs to
+    hold it. Any failure means "nothing to show" — this is reassurance, not a
+    step the connection depends on.
+    """
+    if not scheme or not host:
+        return None
+    try:
+        bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+    except GLib.Error:
+        return None
+    if not _service_present(bus):
+        return None
+    return _search_login(bus, scheme, host)
+
+
+def _search_login(bus, scheme: str, host: str) -> SavedLogin | None:
+    try:
+        reply = bus.call_sync(
+            SECRET_SERVICE,
+            _SECRET_PATH,
+            "org.freedesktop.Secret.Service",
+            "SearchItems",
+            GLib.Variant("(a{ss})", ({"protocol": scheme, "server": host},)),
+            GLib.VariantType("(aoao)"),
+            Gio.DBusCallFlags.NONE,
+            _SECRET_TIMEOUT_MS,
+            None,
+        )
+    except GLib.Error:
+        return None
+    unlocked, locked = reply.unpack()
+    # A locked item still answers for its attributes, and it means a password is
+    # there — worth saying so even if it cannot be read yet.
+    for path in list(unlocked) + list(locked):
+        attributes = _item_attributes(bus, path)
+        if attributes is None:
+            continue
+        domain = attributes.get("domain", "")
+        return SavedLogin(
+            user=attributes.get("user", ""),
+            # gvfsd writes the SMB default in whether or not it was asked for.
+            domain="" if domain == "WORKGROUP" else domain,
+        )
+    return None
+
+
+def _item_attributes(bus, path: str) -> dict[str, str] | None:
+    try:
+        reply = bus.call_sync(
+            SECRET_SERVICE,
+            path,
+            "org.freedesktop.DBus.Properties",
+            "Get",
+            GLib.Variant("(ss)", ("org.freedesktop.Secret.Item", "Attributes")),
+            GLib.VariantType("(v)"),
+            Gio.DBusCallFlags.NONE,
+            _SECRET_TIMEOUT_MS,
+            None,
+        )
+    except GLib.Error:
+        return None
+    return dict(reply.unpack()[0])
+
+
 def mount_uri(
     uri: str, credentials: Credentials, timeout: float = MOUNT_TIMEOUT
 ) -> str | None:

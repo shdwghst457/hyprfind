@@ -528,6 +528,12 @@ Aesthetic regressions are easy to miss, so check these deliberately.
 | 25.45 | Pasted password is not stored | Paste `smb://user:pw@host/share` | Address shows `user@host/share`, password lands in the password field | |
 | 25.46 | Nothing leaks to disk | After 25.45, connect, then read `~/.config/hyprfind/servers.json` | Host and user only, no password; file mode is `600` | |
 | 25.47 | Recent entry stays usable | Click that recent server | Reconnects using the keyring, no retyping | |
+| 25.48 | Saved login is visible | Single-click a recent server whose password is saved | Address fills in, Name shows the saved user, password placeholder reads "Saved in your keyring", and a line says it will be reused | |
+| 25.49 | Nothing saved says nothing | Type a server you have never connected to | No saved-password line; Name stays empty | |
+| 25.50 | Typing wins | Type a name, then finish typing the address | Your name is kept, not replaced by the saved one | |
+| 25.51 | Guest hides it | Tick "Connect as guest" on a saved server | The saved-password line disappears along with the fields | |
+| 25.52 | The secret stays put | While the dialog shows a saved login, run `secret-tool search server <host>` | HyprFind has not copied the password anywhere; only gvfs's own entry exists | |
+
 ---
 
 ## 26. Persistence

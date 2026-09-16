@@ -1,7 +1,15 @@
 """Tests for the GIO mount layer and how credentials reach it."""
 
+from gi.repository import GLib
+
 from hyprfind.core import gio_mount, servers
-from hyprfind.core.gio_mount import NO_BACKEND_ERROR, Credentials, mount_uri
+from hyprfind.core.gio_mount import (
+    NO_BACKEND_ERROR,
+    Credentials,
+    _search_login,
+    mount_uri,
+    saved_login,
+)
 from hyprfind.core.servers import mount_server, parse_server_uri
 
 
@@ -116,3 +124,79 @@ def test_connection_errors_are_surfaced_verbatim(monkeypatch):
     fake_mount(monkeypatch, error="Connection timed out")
     point, error = mount_server(parse_server_uri("smb://nas/media"))
     assert (point, error) == (None, "Connection timed out")
+
+
+class _Reply:
+    def __init__(self, value) -> None:
+        self._value = value
+
+    def unpack(self):
+        return self._value
+
+
+class _FakeBus:
+    """Answers the two Secret Service calls a login lookup makes."""
+
+    def __init__(self, unlocked=(), locked=(), attributes=None, fail=False) -> None:
+        self._found = (list(unlocked), list(locked))
+        self._attributes = attributes or {}
+        self._fail = fail
+        self.methods: list[str] = []
+
+    def call_sync(self, _name, path, _interface, method, *_rest):
+        self.methods.append(method)
+        if self._fail:
+            raise GLib.Error("no such service")
+        if method == "SearchItems":
+            return _Reply(self._found)
+        return _Reply((self._attributes.get(path, {}),))
+
+
+NAS_ITEM = {
+    "protocol": "smb",
+    "server": "nas",
+    "user": "alice",
+    "domain": "WORKGROUP",
+    "xdg:schema": "org.gnome.keyring.NetworkPassword",
+}
+
+
+def test_a_saved_password_reports_who_it_belongs_to():
+    bus = _FakeBus(unlocked=["/item/1"], attributes={"/item/1": NAS_ITEM})
+    assert _search_login(bus, "smb", "nas").user == "alice"
+
+
+def test_the_default_workgroup_is_not_offered_as_a_domain():
+    """gvfsd writes WORKGROUP in regardless, so echoing it back is just noise."""
+    bus = _FakeBus(unlocked=["/item/1"], attributes={"/item/1": NAS_ITEM})
+    assert _search_login(bus, "smb", "nas").domain == ""
+
+
+def test_a_real_domain_is_kept():
+    item = NAS_ITEM | {"domain": "OFFICE"}
+    bus = _FakeBus(unlocked=["/item/1"], attributes={"/item/1": item})
+    assert _search_login(bus, "smb", "nas").domain == "OFFICE"
+
+
+def test_a_locked_item_still_counts_as_saved():
+    """The secret cannot be read yet, but it is there and worth mentioning."""
+    bus = _FakeBus(locked=["/item/9"], attributes={"/item/9": NAS_ITEM})
+    assert _search_login(bus, "smb", "nas").user == "alice"
+
+
+def test_a_server_with_nothing_saved_reports_nothing():
+    assert _search_login(_FakeBus(), "smb", "nas") is None
+
+
+def test_a_broken_secret_service_is_silent():
+    """Reassurance is optional; it must never get in the way of connecting."""
+    assert _search_login(_FakeBus(fail=True), "smb", "nas") is None
+
+
+def test_an_incomplete_address_is_not_looked_up(monkeypatch):
+    def refuse():
+        raise AssertionError("should not touch D-Bus without a host")
+
+    monkeypatch.setattr(gio_mount.Gio, "bus_get_sync", lambda *_a: refuse())
+    assert saved_login("smb", "") is None
+    assert saved_login("", "nas") is None

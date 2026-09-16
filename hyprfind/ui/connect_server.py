@@ -24,7 +24,7 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
 )
 
-from hyprfind.core.gio_mount import keyring_available
+from hyprfind.core.gio_mount import SavedLogin, keyring_available, saved_login
 from hyprfind.core.servers import (
     PROTOCOLS,
     ServerStore,
@@ -121,6 +121,10 @@ class ConnectServerDialog(QDialog):
         self.partial_error: str | None = None
         self._thread: QThread | None = None
         self._worker: _MountWorker | None = None
+        # One keyring lookup per server, since the address is re-examined on
+        # every keystroke.
+        self._saved: dict[tuple[str, str], SavedLogin | None] = {}
+        self._typed_credentials = False
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 14, 16, 14)
@@ -152,13 +156,24 @@ class ConnectServerDialog(QDialog):
         self._anonymous.toggled.connect(self._update_enabled)
         form.addRow(self._anonymous)
         self._user = QLineEdit()
+        # Anything typed by hand outranks what the keyring suggests.
+        self._user.textEdited.connect(lambda _text: self._note_typing())
         form.addRow("Name:", self._user)
         self._domain = QLineEdit()
         self._domain.setPlaceholderText("WORKGROUP")
+        self._domain.textEdited.connect(lambda _text: self._note_typing())
         form.addRow("Domain:", self._domain)
         self._password = QLineEdit()
         self._password.setEchoMode(QLineEdit.EchoMode.Password)
+        self._password.setToolTip(
+            "Leave blank to use the password saved in your keyring, if there is "
+            "one. Typing a password here replaces it."
+        )
         form.addRow("Password:", self._password)
+        self._saved_note = QLabel("")
+        self._saved_note.setObjectName("transferDetail")
+        self._saved_note.setWordWrap(True)
+        form.addRow(self._saved_note)
         self._remember = QCheckBox("Remember this password in my keyring")
         self._remember.setChecked(True)
         self._remember.setToolTip(
@@ -232,6 +247,15 @@ class ConnectServerDialog(QDialog):
 
     def _on_recent_selected(self, current, _previous) -> None:
         self._remove_button.setEnabled(current is not None)
+        if current is None:
+            return
+        # Filling the address in on selection, rather than only on activation,
+        # is what gives the saved credentials a chance to show up before
+        # Connect is pressed.
+        self._typed_credentials = False
+        for field in (self._user, self._domain, self._password):
+            field.clear()
+        self._address.setText(current.data(Qt.ItemDataRole.UserRole))
 
     def _use_recent(self, item: QListWidgetItem) -> None:
         # Setting the full URI lets _on_address_changed split out the protocol.
@@ -270,6 +294,9 @@ class ConnectServerDialog(QDialog):
                 self._password.setText(password)
             if user and not self._user.text().strip():
                 self._user.setText(user)
+            if user or password:
+                # Spelled out in the address, so it outranks the keyring.
+                self._typed_credentials = True
             self._address.blockSignals(True)
             self._address.setText(location)
             self._address.blockSignals(False)
@@ -283,6 +310,42 @@ class ConnectServerDialog(QDialog):
         label = self._form.labelForField(widget)
         if label is not None:
             label.setVisible(visible)
+
+    def _note_typing(self) -> None:
+        """Once the form is filled in by hand, stop overwriting it."""
+        self._typed_credentials = True
+
+    def _saved_login_for(self, protocol, target: ServerTarget | None):
+        if target is None or not protocol.credentials:
+            return None
+        key = (protocol.scheme, target.host)
+        if key not in self._saved:
+            self._saved[key] = saved_login(*key)
+        return self._saved[key]
+
+    def _apply_saved_login(self, protocol, target: ServerTarget | None) -> None:
+        """Show what the keyring already holds for this server, if anything.
+
+        The password itself stays where it is: GVFS hands it to the mount
+        directly, so the field is left empty and only says that a password is
+        waiting. Typing one replaces it.
+        """
+        saved = self._saved_login_for(protocol, target)
+        known = saved is not None and not self._anonymous.isChecked()
+        self._saved_note.setVisible(known)
+        self._password.setPlaceholderText("Saved in your keyring" if known else "")
+        if not known:
+            return
+        whose = saved.user or (target.host if target else "this server")
+        # One line: a wrapped label appearing in an already-sized dialog gets
+        # clipped, and the detail is in the field's tooltip anyway.
+        self._saved_note.setText(f"Reusing the saved password for {whose}.")
+        if self._typed_credentials:
+            return
+        if saved.user:
+            self._user.setText(saved.user)
+        if saved.domain:
+            self._domain.setText(saved.domain)
 
     def _update_enabled(self) -> None:
         protocol = self._current_protocol()
@@ -303,6 +366,7 @@ class ConnectServerDialog(QDialog):
         uri = self._current_uri()
         warning = missing_backend(protocol.scheme)
         target = parse_server_uri(uri) if uri else None
+        self._apply_saved_login(protocol, target)
         if warning:
             self._hint.setText(warning)
         elif target is not None and self._will_browse(protocol, target):
