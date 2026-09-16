@@ -70,7 +70,7 @@ Hyprland session.
 | 2b.14 | Missing udisks2 | Temporarily rename `udisksctl` | "udisksctl not installed (install udisks2)"; app stays responsive | |
 | 2b.15 | Long volume name | Attach a drive with a long label | Name elides; eject glyph never overlaps the text | |
 | 2b.16 | Network share icon | Observe SMB shares | Globe/remote icon, distinct from local drive icons | |
-| 2b.17 | Share disconnect | Right-click an SMB share | Menu says **Disconnect** (not Eject); action unmounts it | |
+| 2b.17 | Share disconnect | Right-click a share mounted via Connect to Server | Menu says **Disconnect** (not Eject); action unmounts it | |
 | 2b.18 | autofs dedupe | Mount `/mnt/transport` so autofs triggers | Listed **once** (not twice, once per autofs + cifs entry) | |
 | 2b.19 | Volume context menu | Right-click a mounted volume | Open, Open in New Pane, Add to Favorites, Eject, Refresh Devices | |
 | 2b.20 | Manual refresh | Right-click → Refresh Devices | Volume list re-reads devices immediately | |
@@ -86,6 +86,8 @@ Hyprland session.
 | 2b.30 | GVFS share appears without restart | Mount a share, watch the sidebar | Row appears within ~4 s from the device poll, no manual refresh | |
 | 2b.31 | GVFS lowercases names | Mount a share called `Data` | Row reads `data`. GVFS lowercases its mount directory and reports the same via `gio info`, so the original case is not recoverable | |
 | 2b.32 | Both mounts of one share coexist | Have `/mnt/Anime` via fstab and also mount `Anime` over GVFS | Both rows listed; they are genuinely different mount points | |
+| 2b.32a | fstab share offers no eject | Hover a cifs/nfs row from fstab or an automount unit | **No** eject glyph, and right-click has no Disconnect: unmounting it needs root, so the button could only ever fail | |
+| 2b.32b | The GVFS twin still ejects | With both mounts of 2b.32 present, hover each | Only the GVFS row has the glyph | |
 | 2b.27 | Sibling partitions distinct | Two unlabelled partitions on one disk | Different names, not two identical rows | |
 
 ---

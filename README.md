@@ -12,7 +12,9 @@ Finder-quality list-view file manager for Hyprland/Linux, built with PyQt6.
 - Cut / Copy / Paste (cut items ghost until pasted), Duplicate, compress, Open With, Get Info
 - Drag-and-drop: move, copy, alias; spring-loaded folders
 - External volumes in the sidebar — USB drives appear when plugged in even with
-  no auto-mount daemon, mount on click, and eject from the row
+  no auto-mount daemon, mount on click, and eject from the row. Shares mounted
+  by the system (cifs or nfs from fstab or an automount unit) are listed but get
+  no eject control, since unmounting those needs root
 - **Tabs** (Ctrl+T) and side-by-side **panes** (Ctrl+Alt+T), list/icon/column views
 - **Recursive search** (Ctrl+Shift+F) on a background thread, with a results
   view showing where each hit lives; supports `*` and `?` wildcards

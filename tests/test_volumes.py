@@ -280,8 +280,20 @@ def test_gvfs_shares_appear_as_network_volumes(tmp_path, monkeypatch):
 
     assert sorted(v.name for v in found) == ["buildbox", "data"]
     assert all(v.kind == NETWORK for v in found)
-    # Network mounts get an eject control.
+    # GVFS owns these, so `gio mount -u` can take them down.
     assert all(v.is_ejectable for v in found)
+
+
+def test_kernel_network_mounts_get_no_eject_control(tmp_path, monkeypatch):
+    """Ejecting runs `gio mount -u`, which cannot touch a cifs mount from fstab.
+
+    /mnt/transport and /mnt/Anime are mounted by the kernel through an automount
+    unit, so unmounting them needs root. The button only ever reported failure.
+    """
+    shares = [v for v in build_service(tmp_path, monkeypatch).volumes() if v.kind == NETWORK]
+    assert shares, "the fixture should provide cifs shares"
+    assert {v.fstype for v in shares} == {"cifs", "autofs"}
+    assert not any(v.is_ejectable for v in shares)
 
 
 def test_gvfs_share_mount_point_is_the_fuse_dir(tmp_path, monkeypatch):

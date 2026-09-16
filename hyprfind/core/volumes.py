@@ -56,6 +56,12 @@ NETWORK = "network"
 
 _COMMAND_TIMEOUT = 15.0
 
+# Ejecting a share means `gio mount -u`, which only reaches mounts GVFS owns.
+# A kernel network mount — cifs or nfs from fstab or an automount unit — belongs
+# to the system and needs root to unmount, so it gets no eject control rather
+# than one that fails every time it is pressed.
+_GVFS_FSTYPES = frozenset({"fuse.gvfsd-fuse", "fuse.gvfsfs"})
+
 
 # GVFS names its fuse directories "<backend>:key=value,key=value", e.g.
 # "smb-share:server=nas,share=media" or "sftp:host=buildbox".
@@ -122,7 +128,9 @@ class Volume:
             return False
         if not self.is_mounted:
             return False
-        return self.kind in (REMOVABLE, OPTICAL, NETWORK)
+        if self.is_network:
+            return self.fstype in _GVFS_FSTYPES
+        return self.kind in (REMOVABLE, OPTICAL)
 
     @property
     def is_block_device(self) -> bool:
