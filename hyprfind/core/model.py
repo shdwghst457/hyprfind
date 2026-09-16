@@ -6,14 +6,22 @@ import os
 from collections.abc import Callable
 
 from PyQt6.QtCore import QDir, QModelIndex, Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QFileSystemModel
+from PyQt6.QtGui import QBrush, QColor, QFileSystemModel
 
 from hyprfind.core.folder_size import FolderSizeCalculator
 from hyprfind.core.fs_columns import DATE_MODIFIED, SIZE
+from hyprfind.core.tags import read_tags
 from hyprfind.utils.formatting import format_bytes
 
 FOLDER_SIZE_CALCULATING = "Calculating…"
 FOLDER_SIZE_UNAVAILABLE = "—"
+
+# Tags are read through a role so delegates need no filesystem knowledge.
+TAGS_ROLE = int(Qt.ItemDataRole.UserRole) + 20
+
+# Finder ghosts cut items until the paste lands (or the clipboard changes).
+CUT_ITEM_COLOR = QColor("#6e6e73")
+CUT_ITEM_OPACITY = 0.45
 
 
 class HyprFileSystemModel(QFileSystemModel):
@@ -35,6 +43,8 @@ class HyprFileSystemModel(QFileSystemModel):
         self.setResolveSymlinks(True)
         self._show_hidden = False
         self._active_directory: str | None = None
+        self._cut_paths: set[str] = set()
+        self._tag_cache: dict[str, list[str]] = {}
         self._folder_sizes = FolderSizeCalculator(is_network_path, parent=self)
         self._folder_sizes.sizeReady.connect(self._on_folder_size_ready)
         self._folder_sizes.sizeFailed.connect(self._on_folder_size_failed)
@@ -52,6 +62,64 @@ class HyprFileSystemModel(QFileSystemModel):
 
     def folder_size_calculator(self) -> FolderSizeCalculator:
         return self._folder_sizes
+
+    def tags_for(self, path: str) -> list[str]:
+        """Cached tag lookup.
+
+        Painting asks per row on every repaint, and each miss is an xattr
+        syscall, so results are held until the directory is refreshed.
+        """
+        cached = self._tag_cache.get(path)
+        if cached is None:
+            cached = read_tags(path)
+            self._tag_cache[path] = cached
+        return cached
+
+    def invalidate_tags(self, paths: list[str] | None = None) -> None:
+        if paths is None:
+            self._tag_cache.clear()
+            return
+        for path in paths:
+            self._tag_cache.pop(path, None)
+
+    def _invalidate_tags_under(self, directory: str) -> None:
+        prefix = directory.rstrip(os.sep) + os.sep
+        stale = [
+            path
+            for path in self._tag_cache
+            if path == directory or path.startswith(prefix)
+        ]
+        for path in stale:
+            del self._tag_cache[path]
+
+    def set_cut_paths(self, paths: list[str]) -> None:
+        """Mark paths as cut so every view can render them ghosted.
+
+        The clipboard is process-wide, so holding this on the shared model makes
+        the dimming appear in all panes and all three view modes at once.
+        """
+        normalized = {os.path.normpath(os.path.abspath(p)) for p in paths if p}
+        if normalized == self._cut_paths:
+            return
+        # Repaint what left the set as well as what entered it.
+        affected = normalized | self._cut_paths
+        self._cut_paths = normalized
+        for path in affected:
+            index = self.index(path, 0)
+            if not index.isValid():
+                continue
+            last = self.index(index.row(), self.columnCount() - 1, index.parent())
+            self.dataChanged.emit(index, last)
+
+    def is_cut_path(self, path: str) -> bool:
+        if not self._cut_paths:
+            return False
+        return os.path.normpath(os.path.abspath(path)) in self._cut_paths
+
+    def is_cut_index(self, index: QModelIndex) -> bool:
+        if not self._cut_paths or not index.isValid():
+            return False
+        return self.is_cut_path(self.filePath(index))
 
     def set_show_hidden(self, show: bool) -> None:
         self._show_hidden = show
@@ -143,17 +211,21 @@ class HyprFileSystemModel(QFileSystemModel):
         return super().type(index)
 
     def data(self, index: QModelIndex, role: int = Qt.ItemDataRole.DisplayRole):
+        if role == TAGS_ROLE:
+            return self.tags_for(self.filePath(index)) if index.isValid() else []
+        if role == Qt.ItemDataRole.ForegroundRole and self.is_cut_index(index):
+            return QBrush(CUT_ITEM_COLOR)
         if role == Qt.ItemDataRole.TextAlignmentRole:
             if index.column() in (SIZE, DATE_MODIFIED):
                 return int(
                     Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
                 )
-        if (
-            role == Qt.ItemDataRole.DisplayRole
-            and index.column() == SIZE
-            and self.isDir(index)
-        ):
-            return self._folder_size_display(self.filePath(index))
+        if role == Qt.ItemDataRole.DisplayRole and index.column() == SIZE:
+            if self.isDir(index):
+                return self._folder_size_display(self.filePath(index))
+            # Qt's own size column uses binary KiB/MiB; keep every row on the
+            # decimal units Finder shows so the column reads consistently.
+            return format_bytes(super().size(index))
         return super().data(index, role)
 
     def clear_folder_size_queue(self) -> None:
@@ -239,6 +311,7 @@ class HyprFileSystemModel(QFileSystemModel):
             return
 
         self._folder_sizes.invalidate(normalized)
+        self._invalidate_tags_under(normalized)
 
         index = self.index(normalized)
         if index.isValid():

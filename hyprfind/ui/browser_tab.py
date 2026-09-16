@@ -60,6 +60,8 @@ class BrowserTab(QWidget):
             return False
 
         self._current_path = normalized
+        # Navigating leaves search results behind, as Finder does.
+        self.view_stack.end_search()
         self.view_stack.set_current_directory(normalized)
         self.refresh_service.watch(normalized)
 

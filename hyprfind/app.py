@@ -9,6 +9,7 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QColor, QPalette
 from PyQt6.QtWidgets import QApplication
 
+from hyprfind.ui.icons import configure_icon_theme
 from hyprfind.ui.main_window import MainWindow
 
 
@@ -40,21 +41,29 @@ QTreeView::branch:open {{
 
 
 def _apply_dark_palette(app: QApplication) -> None:
+    """Match the palette to dark.qss so native-drawn widgets blend in."""
     app.setStyle("Fusion")
     palette = QPalette()
-    palette.setColor(QPalette.ColorRole.Window, QColor(30, 30, 30))
-    palette.setColor(QPalette.ColorRole.WindowText, QColor(224, 224, 224))
-    palette.setColor(QPalette.ColorRole.Base, QColor(25, 25, 25))
-    palette.setColor(QPalette.ColorRole.AlternateBase, QColor(37, 37, 37))
-    palette.setColor(QPalette.ColorRole.ToolTipBase, QColor(42, 42, 42))
-    palette.setColor(QPalette.ColorRole.ToolTipText, QColor(224, 224, 224))
-    palette.setColor(QPalette.ColorRole.Text, QColor(224, 224, 224))
-    palette.setColor(QPalette.ColorRole.Button, QColor(42, 42, 42))
-    palette.setColor(QPalette.ColorRole.ButtonText, QColor(224, 224, 224))
+    palette.setColor(QPalette.ColorRole.Window, QColor("#1c1c1e"))
+    palette.setColor(QPalette.ColorRole.WindowText, QColor("#e8e8ea"))
+    palette.setColor(QPalette.ColorRole.Base, QColor("#1c1c1e"))
+    palette.setColor(QPalette.ColorRole.AlternateBase, QColor("#202023"))
+    palette.setColor(QPalette.ColorRole.ToolTipBase, QColor("#2c2c2e"))
+    palette.setColor(QPalette.ColorRole.ToolTipText, QColor("#e8e8ea"))
+    palette.setColor(QPalette.ColorRole.Text, QColor("#e8e8ea"))
+    palette.setColor(QPalette.ColorRole.Button, QColor("#3a3a3d"))
+    palette.setColor(QPalette.ColorRole.ButtonText, QColor("#e8e8ea"))
     palette.setColor(QPalette.ColorRole.BrightText, Qt.GlobalColor.red)
-    palette.setColor(QPalette.ColorRole.Link, QColor(74, 122, 184))
-    palette.setColor(QPalette.ColorRole.Highlight, QColor(61, 90, 128))
-    palette.setColor(QPalette.ColorRole.HighlightedText, QColor(255, 255, 255))
+    palette.setColor(QPalette.ColorRole.Link, QColor("#0a6cf0"))
+    palette.setColor(QPalette.ColorRole.Highlight, QColor("#0a6cf0"))
+    palette.setColor(QPalette.ColorRole.HighlightedText, QColor("#ffffff"))
+    palette.setColor(QPalette.ColorRole.PlaceholderText, QColor("#8e8e93"))
+    palette.setColor(
+        QPalette.ColorGroup.Disabled, QPalette.ColorRole.Text, QColor("#5a5a5e")
+    )
+    palette.setColor(
+        QPalette.ColorGroup.Disabled, QPalette.ColorRole.WindowText, QColor("#5a5a5e")
+    )
     app.setPalette(palette)
 
 
@@ -65,6 +74,7 @@ def main() -> int:
     app.setDesktopFileName("hyprfind")
 
     _apply_dark_palette(app)
+    configure_icon_theme()
 
     stylesheet = ""
     qss_path = _style_path()

@@ -18,7 +18,9 @@ from PyQt6.QtWidgets import (
 from hyprfind.core.model import HyprFileSystemModel
 from hyprfind.core.trash import is_trash_directory, trash_count
 from hyprfind.core.sort_proxy import FileSortProxyModel
+from hyprfind.core.search import SearchQuery
 from hyprfind.ui.file_list import FileListView
+from hyprfind.ui.search_view import SearchView
 
 
 class IconFileView(QListView):
@@ -116,12 +118,15 @@ class ViewStack(QWidget):
     filesTransferred = pyqtSignal(str, str)
     dragSourceFinished = pyqtSignal()
     selectionChanged = pyqtSignal()
+    revealRequested = pyqtSignal(str)
+    searchFinished = pyqtSignal(int)
 
     def __init__(self, model: HyprFileSystemModel, parent=None) -> None:
         super().__init__(parent)
         self._model = model
         self._mode = "list"
         self._current_path = ""
+        self._searching = False
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
         self._empty_label = QLabel(self)
@@ -144,9 +149,17 @@ class ViewStack(QWidget):
         self.icon_view = IconFileView(model, self._proxy_icon)
         self.column_view = ColumnFileView(model, self._proxy_column)
 
+        self.search_view = SearchView(model.iconProvider(), self)
+
         self._stack.addWidget(self.file_list)
         self._stack.addWidget(self.icon_view)
         self._stack.addWidget(self.column_view)
+        self._stack.addWidget(self.search_view)
+
+        self.search_view.pathActivated.connect(self.pathActivated)
+        self.search_view.revealRequested.connect(self.revealRequested)
+        self.search_view.statusMessage.connect(self.statusMessage)
+        self.search_view.searchFinished.connect(self.searchFinished)
 
         self.file_list.pathActivated.connect(self.pathActivated)
         self.file_list.openParentRequested.connect(self.openParentRequested)
@@ -171,21 +184,44 @@ class ViewStack(QWidget):
 
     @property
     def active_view(self):
+        if self._searching:
+            return self.search_view
         if self._mode == "icon":
             return self.icon_view
         if self._mode == "column":
             return self.column_view
         return self.file_list
 
+    @property
+    def is_searching(self) -> bool:
+        return self._searching
+
     def set_view_mode(self, mode: str, icon_size: int = 48) -> None:
         self._mode = mode
         if mode == "icon":
             self.icon_view.set_icon_size(icon_size)
+        if not self._searching:
+            self._show_browse_view()
+
+    def _show_browse_view(self) -> None:
+        if self._mode == "icon":
             self._stack.setCurrentWidget(self.icon_view)
-        elif mode == "column":
+        elif self._mode == "column":
             self._stack.setCurrentWidget(self.column_view)
         else:
             self._stack.setCurrentWidget(self.file_list)
+
+    def start_search(self, query: SearchQuery) -> None:
+        self._searching = True
+        self._stack.setCurrentWidget(self.search_view)
+        self.search_view.start(query)
+
+    def end_search(self) -> None:
+        if not self._searching:
+            return
+        self.search_view.stop()
+        self._searching = False
+        self._show_browse_view()
 
     def set_current_directory(self, path: str) -> None:
         self._current_path = path

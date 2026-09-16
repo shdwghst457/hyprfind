@@ -19,6 +19,9 @@ class AppSettings:
         self.sort_column: int = 0
         self.sort_order: int = 0
         self.confirm_permanent_delete: bool = True
+        # Column index -> pixel width. Name is omitted; it always flexes.
+        self.column_widths: dict[int, int] = {}
+        self.group_by: str = "none"
 
     def load(self) -> None:
         if not self._path.exists():
@@ -47,7 +50,18 @@ class AppSettings:
             self.confirm_permanent_delete = bool(
                 data.get("confirm_permanent_delete", True)
             )
-        except (json.JSONDecodeError, OSError, TypeError):
+            widths = data.get("column_widths")
+            if isinstance(widths, dict):
+                # JSON object keys are strings; the UI indexes columns by int.
+                self.column_widths = {
+                    int(key): int(value)
+                    for key, value in widths.items()
+                    if str(key).lstrip("-").isdigit() and int(value) > 0
+                }
+            group = data.get("group_by")
+            if isinstance(group, str):
+                self.group_by = group
+        except (json.JSONDecodeError, OSError, TypeError, ValueError):
             pass
 
     def save(self) -> None:
@@ -63,6 +77,11 @@ class AppSettings:
         payload["sort_column"] = self.sort_column
         payload["sort_order"] = self.sort_order
         payload["confirm_permanent_delete"] = self.confirm_permanent_delete
+        if self.column_widths:
+            payload["column_widths"] = {
+                str(key): value for key, value in sorted(self.column_widths.items())
+            }
+        payload["group_by"] = self.group_by
         self._path.write_text(
             json.dumps(payload, indent=2) + "\n", encoding="utf-8"
         )
@@ -84,4 +103,23 @@ class AppSettings:
 
     def set_icon_size(self, size: int) -> None:
         self.icon_size = max(16, min(128, size))
+        self.save()
+
+    def set_window_geometry(self, geometry: str) -> None:
+        self.window_geometry = geometry
+        self.save()
+
+    def set_sort(self, column: int, order: int) -> None:
+        self.sort_column = column
+        self.sort_order = order
+        self.save()
+
+    def set_column_widths(self, widths: dict[int, int]) -> None:
+        self.column_widths = {
+            int(column): int(width) for column, width in widths.items() if width > 0
+        }
+        self.save()
+
+    def set_group_by(self, key: str) -> None:
+        self.group_by = key
         self.save()

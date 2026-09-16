@@ -7,6 +7,7 @@ import os
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
     QHBoxLayout,
+    QLabel,
     QLineEdit,
     QPushButton,
     QSizePolicy,
@@ -68,15 +69,18 @@ class PathBar(QWidget):
             for seg in segments:
                 label = os.path.basename(seg.rstrip("/")) or seg
                 parts.append((label, seg))
+        last = len(parts) - 1
         for i, (label, full) in enumerate(parts):
             if i > 0:
-                sep = QPushButton("›")
-                sep.setFlat(True)
-                sep.setEnabled(False)
-                sep.setFixedWidth(16)
+                # A label, not a disabled button: separators are not clickable
+                # and should carry no button chrome.
+                sep = QLabel("›")
+                sep.setObjectName("pathSeparator")
                 self._crumb_layout.addWidget(sep)
             btn = QPushButton(label)
+            btn.setObjectName("pathCrumb")
             btn.setFlat(True)
+            btn.setProperty("current", i == last)
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
             btn.clicked.connect(lambda _checked=False, p=full: self.navigate.emit(p))
             self._crumb_layout.addWidget(btn)

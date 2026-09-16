@@ -9,9 +9,21 @@ Finder-quality list-view file manager for Hyprland/Linux, built with PyQt6.
 - **Spacebar Quick Look** preview (arrow keys browse selection)
 - Sidebar with favorites, Trash, and mounted volumes
 - **Move to Trash** with undo; Shift+Delete for permanent delete
-- Cut / Copy / Paste, Duplicate, compress, Open With, Get Info
+- Cut / Copy / Paste (cut items ghost until pasted), Duplicate, compress, Open With, Get Info
 - Drag-and-drop: move, copy, alias; spring-loaded folders
-- Multi-pane browsing (Ctrl+T), list/icon/column views
+- External volumes in the sidebar — USB drives appear when plugged in even with
+  no auto-mount daemon, mount on click, and eject from the row
+- **Tabs** (Ctrl+T) and side-by-side **panes** (Ctrl+Alt+T), list/icon/column views
+- **Recursive search** (Ctrl+Shift+F) on a background thread, with a results
+  view showing where each hit lives; supports `*` and `?` wildcards
+- **Smart folders** — saved searches with a full editor, reorderable and rerunnable
+- **Connect to Server** for SMB/SFTP/FTP/NFS/WebDAV, with credentials and a
+  recent-servers list
+- **Group By** kind, date modified, size, or name, with headings in the list
+- **Tags** written to `user.xdg.tags`, so Dolphin and Nautilus see them too;
+  colour dots appear beside filenames
+- Progress dialog with a working **Cancel** for large copies and moves
+- Column widths, sort order, grouping, and window geometry persist across sessions
 - Breadcrumb path bar, in-folder filter (Ctrl+F), Go menu + recents
 - Dark theme suited to Hyprland
 
@@ -20,7 +32,7 @@ Finder-quality list-view file manager for Hyprland/Linux, built with PyQt6.
 On CachyOS / Arch, once:
 
 ```bash
-sudo pacman -S python python-pip python-pyqt6 gio xdg-user-dirs
+sudo pacman -S python python-pip python-pyqt6 gio xdg-user-dirs udisks2 breeze-icons
 git clone https://github.com/YOUR_USER/hyprfind.git
 cd hyprfind
 chmod +x install-local.sh
@@ -28,6 +40,18 @@ chmod +x install-local.sh
 ```
 
 That script: installs into a venv, puts `hyprfind` on `~/.local/bin`, and registers **HyprFind** in your app launcher (wofi/rofi/etc.).
+
+Two of those packages matter more than they look:
+
+- **`udisks2`** — lets HyprFind mount and eject USB drives without root. A bare
+  Hyprland session runs no auto-mount daemon, so HyprFind lists attached drives
+  itself and mounts them when you click. Without udisks2 you can still browse
+  drives that are already mounted, but clicking an unmounted one will report
+  that udisksctl is missing.
+- **`breeze-icons`** — Hyprland sets no desktop environment, so Qt finds no icon
+  theme on its own and the sidebar and file list render without icons. HyprFind
+  points Qt at the system theme directories and prefers `breeze-dark`, falling
+  back to `Adwaita` then `hicolor`.
 
 If a new terminal says `hyprfind: command not found`, add `~/.local/bin` to PATH once:
 
@@ -42,6 +66,39 @@ Same steps on your hyprbook after `git clone`.
 ```bash
 ./run-hyprfind.fish          # fish, no PATH setup needed
 .venv/bin/python -m hyprfind # direct
+```
+
+## Deploying changes
+
+`install-local.sh` uses an **editable** install (`pip install -e`), so the
+`hyprfind` command runs straight from this working tree. Editing the source is
+all it takes — just relaunch the app.
+
+Re-run `./install-local.sh` only when something outside the Python source
+changes:
+
+- a new dependency in `pyproject.toml`
+- a change to the `[project.scripts]` entry point
+- the `.desktop` launcher entry or the project's location on disk
+
+To check what is currently wired up:
+
+```bash
+readlink -f ~/.local/bin/hyprfind   # should point into ./.venv/bin
+.venv/bin/python -c "import hyprfind; print(hyprfind.__file__)"
+```
+
+Run the tests with:
+
+```bash
+.venv/bin/python -m pytest -q
+```
+
+`install-local.sh` does not pull in test dependencies. On a fresh clone, add
+them once with:
+
+```bash
+.venv/bin/pip install -e ".[dev]"
 ```
 
 ## Keyboard shortcuts
@@ -60,10 +117,16 @@ Same steps on your hyprbook after `git clone`.
 | Ctrl+C / Ctrl+X / Ctrl+V | Copy / Cut / Paste |
 | Ctrl+D | Duplicate |
 | Ctrl+F | Filter current folder |
+| Ctrl+Shift+F | Recursive search |
+| Esc | Leave search results (or close Quick Look) |
 | Ctrl+Shift+N | New folder |
 | Ctrl+Alt+N | New folder with selection |
 | Ctrl+Shift+. | Show/hide hidden files |
-| Ctrl+T | New side-by-side pane |
+| Ctrl+T | New tab |
+| Ctrl+W | Close tab |
+| Ctrl+Tab / Ctrl+Shift+Tab | Next / previous tab |
+| Ctrl+Alt+T | New side-by-side pane |
+| Ctrl+Alt+W | Close pane |
 | Ctrl+L | Edit path (double-click breadcrumbs) |
 | Ctrl+R / F5 | Force refresh |
 

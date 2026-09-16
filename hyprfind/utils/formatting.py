@@ -5,36 +5,50 @@ from __future__ import annotations
 from PyQt6.QtCore import QDateTime
 
 
-def format_date_modified(dt: QDateTime, column_width: int) -> str:
-    """Finder-style date text that shortens as the column narrows."""
-    if not dt.isValid():
-        return ""
+# Worst-case text per detail tier. A column must be sized against these rather
+# than against each row's own text, or neighbouring rows pick different formats
+# and the column reads raggedly.
+DATE_TIER_SAMPLES = (
+    "Wednesday at 12:58 PM",
+    "12/31/26 12:58 PM",
+    "12/31/26",
+    "12/31",
+)
 
-    now = QDateTime.currentDateTime()
-    today = now.date()
+
+def date_modified_tiers(dt: QDateTime) -> list[str]:
+    """Date texts from most to least detailed, aligned with DATE_TIER_SAMPLES."""
+    if not dt.isValid():
+        return ["", "", "", ""]
+
+    today = QDateTime.currentDateTime().date()
     file_date = dt.date()
     time_text = dt.toString("h:mm AP")
     date_text = file_date.toString("M/d/yy")
-    short_date = file_date.toString("M/d")
+    full = f"{date_text} {time_text}"
 
+    if file_date == today:
+        relative = f"Today at {time_text}"
+    elif file_date == today.addDays(-1):
+        relative = f"Yesterday at {time_text}"
+    elif 2 <= file_date.daysTo(today) <= 6:
+        relative = f"{file_date.toString('dddd')} at {time_text}"
+    else:
+        relative = full
+
+    return [relative, full, date_text, file_date.toString("M/d")]
+
+
+def format_date_modified(dt: QDateTime, column_width: int) -> str:
+    """Finder-style date text that shortens as the column narrows."""
+    tiers = date_modified_tiers(dt)
     if column_width >= 168:
-        if file_date == today:
-            return f"Today at {time_text}"
-        yesterday = today.addDays(-1)
-        if file_date == yesterday:
-            return f"Yesterday at {time_text}"
-        days_ago = file_date.daysTo(today)
-        if 2 <= days_ago <= 6:
-            return f"{file_date.toString('dddd')} at {time_text}"
-        return f"{date_text} {time_text}"
-
+        return tiers[0]
     if column_width >= 112:
-        return f"{date_text} {time_text}"
-
+        return tiers[1]
     if column_width >= 68:
-        return date_text
-
-    return short_date
+        return tiers[2]
+    return tiers[3]
 
 
 def format_bytes(size: int) -> str:

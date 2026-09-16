@@ -1,6 +1,8 @@
 """Tests for folder size queue and computation."""
 
 from hyprfind.core.folder_size import (
+    SIZE_COMPLETE,
+    SIZE_ERROR,
     FolderSizeCalculator,
     compute_folder_size,
     list_child_directories,
@@ -12,23 +14,24 @@ def test_compute_folder_size_recursive(tmp_path):
     sub = tmp_path / "sub"
     sub.mkdir()
     (sub / "hidden.txt").write_text("999", encoding="utf-8")
-    size, ok = compute_folder_size(str(tmp_path))
-    assert ok
+    size, status = compute_folder_size(str(tmp_path))
+    assert status == SIZE_COMPLETE
     assert size == 8
 
 
 def test_compute_folder_size_empty_dir(tmp_path):
     folder = tmp_path / "empty"
     folder.mkdir()
-    size, ok = compute_folder_size(str(folder))
-    assert ok
+    size, status = compute_folder_size(str(folder))
+    assert status == SIZE_COMPLETE
     assert size == 0
 
 
 def test_compute_folder_size_missing():
-    size, ok = compute_folder_size("/nonexistent/path/xyz")
-    assert not ok
-    assert size is None
+    """An unreadable folder reports ERROR so the cell shows "—", not "0 bytes"."""
+    size, status = compute_folder_size("/nonexistent/path/xyz")
+    assert status == SIZE_ERROR
+    assert size == 0
 
 
 def test_schedule_all_paths(tmp_path):

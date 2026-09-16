@@ -9,6 +9,7 @@ import tempfile
 import time
 
 from PyQt6.QtCore import (
+    QItemSelectionModel,
     QMimeData,
     QModelIndex,
     QPersistentModelIndex,
@@ -24,6 +25,7 @@ from PyQt6.QtGui import (
     QColor,
     QDrag,
     QDesktopServices,
+    QIcon,
     QPainter,
     QPixmap,
 )
@@ -31,6 +33,7 @@ from PyQt6.QtWidgets import (
     QAbstractItemView,
     QApplication,
     QHeaderView,
+    QInputDialog,
     QMenu,
     QMessageBox,
     QSizePolicy,
@@ -41,6 +44,20 @@ from PyQt6.QtWidgets import (
 from hyprfind.core.clipboard import FileClipboard
 from hyprfind.core.compress import compress_items
 from hyprfind.core.file_ops import ConflictChoice, TransferOp, transfer_items, unique_directory
+from hyprfind.core.grouping import GROUP_NONE
+from hyprfind.core.settings import AppSettings
+from hyprfind.core.tags import (
+    STANDARD_TAGS,
+    TAG_COLORS,
+    add_tag,
+    all_tags,
+    color_for,
+    common_tags,
+    remove_tag,
+    supports_tags,
+    write_tags,
+)
+from hyprfind.ui.transfer_dialog import run_transfer
 from hyprfind.core.open_with import apps_for_mime, launch_app
 from hyprfind.core.trash import (
     is_trash_directory,
@@ -58,6 +75,10 @@ from hyprfind.ui.date_delegate import DateModifiedDelegate
 from hyprfind.ui.drag_support import operation_for_modifiers, status_verb
 from hyprfind.ui.info_panel import InfoPanel
 from hyprfind.ui.list_delegate import DropHighlightDelegate
+
+# Name stays readable down to this width before metadata columns start yielding.
+NAME_MIN_WIDTH = 190
+META_MIN_WIDTHS = {DATE_MODIFIED: 66, SIZE: 62, TYPE: 60}
 
 # How long the cursor must rest over a closed folder before it springs open.
 SPRING_LOAD_DELAY_MS = 650
@@ -115,6 +136,7 @@ class FileListView(QTreeView):
     selectionChangedSignal = pyqtSignal()
     undoStateChanged = pyqtSignal()
     emptyTrashRequested = pyqtSignal()
+    openInNewTabRequested = pyqtSignal(str)
 
     def __init__(self, model: HyprFileSystemModel, parent=None) -> None:
         super().__init__(parent)
@@ -124,6 +146,12 @@ class FileListView(QTreeView):
         self._sort_column = NAME
         self._sort_order = Qt.SortOrder.AscendingOrder
         self._columns_initialized = False
+        self._settings: AppSettings | None = None
+        # Column drags arrive in a stream; coalesce before touching the disk.
+        self._column_save_timer = QTimer(self)
+        self._column_save_timer.setSingleShot(True)
+        self._column_save_timer.setInterval(400)
+        self._column_save_timer.timeout.connect(self._persist_column_widths)
         # Held across drag events and dereferenced during paint, so it MUST be
         # persistent: a plain QModelIndex dangles when a spring expand inserts
         # rows into the proxy, and the next paint would crash.
@@ -192,6 +220,48 @@ class FileListView(QTreeView):
     def set_undo_stack(self, stack: UndoStack) -> None:
         self._undo_stack = stack
 
+    def _report_transfer(
+        self, errors: list[str], cancelled: bool, verb: str, count: int
+    ) -> None:
+        """Summarise a transfer, distinguishing a cancel from a failure."""
+        if cancelled:
+            self.statusMessage.emit("Transfer cancelled")
+        elif errors:
+            self.statusMessage.emit("; ".join(errors[:3]))
+        else:
+            self.statusMessage.emit(f"{verb} {count} item(s)")
+
+    def set_settings(self, settings: AppSettings) -> None:
+        """Attach persisted UI state (column widths, sort order, grouping)."""
+        self._settings = settings
+        self._sort_column = settings.sort_column
+        self._sort_order = (
+            Qt.SortOrder.DescendingOrder
+            if settings.sort_order
+            else Qt.SortOrder.AscendingOrder
+        )
+        self.set_group_by(settings.group_by, persist=False)
+        self._apply_sort()
+
+    def set_group_by(self, key: str, *, persist: bool = True) -> None:
+        """Group rows under headings, or pass GROUP_NONE to switch it off."""
+        self._proxy.set_group_by(key)
+        # Heading rows are taller than plain rows, which uniform heights forbid.
+        self.setUniformRowHeights(key == GROUP_NONE)
+        self._apply_sort()
+        self.viewport().update()
+        if persist and self._settings is not None:
+            self._settings.set_group_by(key)
+
+    def _persist_column_widths(self) -> None:
+        if self._settings is None or not self._columns_initialized:
+            return
+        header = self.header()
+        # Name is derived from the others, so storing it would fight the flex.
+        self._settings.set_column_widths(
+            {column: header.sectionSize(column) for column in (DATE_MODIFIED, SIZE, TYPE)}
+        )
+
     def set_confirm_permanent_delete(self, confirm: bool) -> None:
         self._confirm_permanent_delete = confirm
 
@@ -212,14 +282,15 @@ class FileListView(QTreeView):
         view_width = max(self.viewport().width(), self.width(), 640)
         date_w = min(240, max(168, int(view_width * 0.22)))
         size_w = min(116, max(96, int(view_width * 0.13)))
-        type_w = min(100, max(84, int(view_width * 0.09)))
-        target_meta = int(view_width * 0.44)
+        # Wide enough for names like "Plain Text Document" without eliding.
+        type_w = min(176, max(148, int(view_width * 0.14)))
+        target_meta = int(view_width * 0.46)
         meta_total = date_w + size_w + type_w
         if meta_total < target_meta:
             scale = target_meta / meta_total
             date_w = min(240, max(168, int(date_w * scale)))
             size_w = min(116, max(96, int(size_w * scale)))
-            type_w = min(100, max(84, int(type_w * scale)))
+            type_w = min(176, max(148, int(type_w * scale)))
         name_w = max(int(view_width * 0.52), view_width - date_w - size_w - type_w)
         return {
             NAME: name_w,
@@ -229,23 +300,49 @@ class FileListView(QTreeView):
         }
 
     def _flex_name_column(self) -> None:
-        """Keep Name as the flexible column that fills the viewport."""
+        """Keep Name filling the viewport, and never let it be squeezed away.
+
+        Splitting into panes narrows the view without changing the metadata
+        columns, which would otherwise crush Name down to an ellipsis. Filenames
+        matter more than metadata, so metadata yields first — the date column
+        already shortens its text as it narrows.
+        """
         header = self.header()
-        others = sum(
-            header.sectionSize(column)
-            for column in (DATE_MODIFIED, SIZE, TYPE)
-        )
-        name_w = max(header.minimumSectionSize(), self.viewport().width() - others)
-        if header.sectionSize(NAME) == name_w:
+        viewport = self.viewport().width()
+        if viewport <= 0:
             return
+
+        meta_columns = (DATE_MODIFIED, SIZE, TYPE)
+        widths = {column: header.sectionSize(column) for column in meta_columns}
+        name_floor = max(
+            header.minimumSectionSize(), min(NAME_MIN_WIDTH, int(viewport * 0.4))
+        )
+
+        deficit = name_floor - (viewport - sum(widths.values()))
+        if deficit > 0:
+            # Reclaim from the widest-first order, down to each column's floor.
+            for column in (DATE_MODIFIED, TYPE, SIZE):
+                if deficit <= 0:
+                    break
+                take = min(deficit, max(0, widths[column] - META_MIN_WIDTHS[column]))
+                widths[column] -= take
+                deficit -= take
+
+        name_w = max(header.minimumSectionSize(), viewport - sum(widths.values()))
+
         header.blockSignals(True)
-        header.resizeSection(NAME, name_w)
+        for column, width in widths.items():
+            if header.sectionSize(column) != width:
+                header.resizeSection(column, width)
+        if header.sectionSize(NAME) != name_w:
+            header.resizeSection(NAME, name_w)
         header.blockSignals(False)
 
     def _on_section_resized(self, logical_index: int, _old: int, _new: int) -> None:
         # Dragging a metadata divider adjusts Name; dragging Name stays put.
         if logical_index != NAME:
             self._flex_name_column()
+        self._column_save_timer.start()
 
     def _configure_columns(self) -> None:
         if self._columns_initialized:
@@ -265,6 +362,8 @@ class FileListView(QTreeView):
             Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
         )
         header.setMinimumSectionSize(44)
+        # Narrow sections otherwise clip their caption mid-word.
+        header.setTextElideMode(Qt.TextElideMode.ElideRight)
 
         # All columns draggable; Name flexes when the pane or other columns change.
         desired_order = (NAME, DATE_MODIFIED, SIZE, TYPE)
@@ -273,8 +372,14 @@ class FileListView(QTreeView):
             if current >= 0 and current != visual:
                 header.moveSection(current, visual)
 
-        for column, width in self._intelligent_column_widths().items():
+        # Saved widths win over the proportional defaults, but Name is always
+        # recomputed so a narrower window cannot leave it stranded offscreen.
+        widths = self._intelligent_column_widths()
+        saved = self._settings.column_widths if self._settings else {}
+        for column, width in widths.items():
             header.setSectionResizeMode(column, QHeaderView.ResizeMode.Interactive)
+            if column != NAME and column in saved:
+                width = max(META_MIN_WIDTHS.get(column, 44), saved[column])
             header.resizeSection(column, width)
 
         self._flex_name_column()
@@ -388,6 +493,28 @@ class FileListView(QTreeView):
         if root.isValid():
             return self._model.filePath(root)
         return ""
+
+    def select_path(self, path: str, attempts: int = 8) -> None:
+        """Select and scroll to `path`, retrying while the directory loads.
+
+        Used by "Show in Enclosing Folder": the row does not exist until the
+        model has finished populating the freshly navigated directory.
+        """
+        source = self._model.index(path)
+        proxy = self._proxy_index(source)
+        if proxy.isValid():
+            name_index = self._name_index(proxy)
+            self.setCurrentIndex(name_index)
+            self.selectionModel().select(
+                name_index,
+                QItemSelectionModel.SelectionFlag.ClearAndSelect
+                | QItemSelectionModel.SelectionFlag.Rows,
+            )
+            self.scrollTo(name_index, QAbstractItemView.ScrollHint.PositionAtCenter)
+            self.setFocus()
+            return
+        if attempts > 0:
+            QTimer.singleShot(60, lambda: self.select_path(path, attempts - 1))
 
     def selected_paths(self) -> list[str]:
         paths: list[str] = []
@@ -878,21 +1005,19 @@ class FileListView(QTreeView):
 
         self._end_drag_session()
         self.statusMessage.emit(f"Transferring {len(filtered)} item(s)…")
-        errors = transfer_items(
+        errors, cancelled = run_transfer(
             filtered,
             target_dir,
-            operation=operation,
+            operation,
             on_conflict=self._resolve_conflict,
+            parent=self,
         )
-        if errors:
-            self.statusMessage.emit("; ".join(errors[:3]))
-        else:
-            verbs = {
-                TransferOp.MOVE: "Moved",
-                TransferOp.COPY: "Copied",
-                TransferOp.ALIAS: "Aliased",
-            }
-            self.statusMessage.emit(f"{verbs[operation]} {len(filtered)} item(s)")
+        verbs = {
+            TransferOp.MOVE: "Moved",
+            TransferOp.COPY: "Copied",
+            TransferOp.ALIAS: "Aliased",
+        }
+        self._report_transfer(errors, cancelled, verbs[operation], len(filtered))
 
         parents = {os.path.dirname(source) for source in filtered}
         for parent in parents:
@@ -995,6 +1120,8 @@ class FileListView(QTreeView):
             self._sort_column = logical
             self._sort_order = Qt.SortOrder.AscendingOrder
         self._apply_sort()
+        if self._settings is not None:
+            self._settings.set_sort(self._sort_column, int(self._sort_order.value))
 
     def _apply_sort(self) -> None:
         self._proxy.sort(self._sort_column, self._sort_order)
@@ -1049,6 +1176,108 @@ class FileListView(QTreeView):
             self._model.refresh_directory(parent)
         self.statusMessage.emit(f"Restored {restored} item(s)")
 
+    def _build_tags_menu(self, menu: QMenu, paths: list[str]) -> None:
+        """Colour tags plus a custom entry, checked where all items share a tag."""
+        tags_menu = menu.addMenu("Tags")
+        if not supports_tags(paths[0]):
+            unsupported = QAction("Not supported on this filesystem", self)
+            unsupported.setEnabled(False)
+            tags_menu.addAction(unsupported)
+            return
+
+        shared = set(common_tags(paths))
+        present = set(all_tags(paths))
+        for tag in STANDARD_TAGS:
+            action = QAction(tag, self)
+            action.setCheckable(True)
+            action.setChecked(tag in shared)
+            icon = self._tag_swatch(tag)
+            if icon is not None:
+                action.setIcon(icon)
+            action.triggered.connect(
+                lambda _c=False, t=tag, p=list(paths): self._toggle_tags(p, t)
+            )
+            tags_menu.addAction(action)
+
+        custom = sorted(present - set(TAG_COLORS))
+        if custom:
+            tags_menu.addSeparator()
+            for tag in custom:
+                action = QAction(tag, self)
+                action.setCheckable(True)
+                action.setChecked(tag in shared)
+                action.triggered.connect(
+                    lambda _c=False, t=tag, p=list(paths): self._toggle_tags(p, t)
+                )
+                tags_menu.addAction(action)
+
+        tags_menu.addSeparator()
+        add_custom = QAction("Add Tag…", self)
+        add_custom.triggered.connect(lambda _c=False, p=list(paths): self._prompt_tag(p))
+        tags_menu.addAction(add_custom)
+
+        if present:
+            clear = QAction("Clear Tags", self)
+            clear.triggered.connect(lambda _c=False, p=list(paths): self._clear_tags(p))
+            tags_menu.addAction(clear)
+
+    @staticmethod
+    def _tag_swatch(tag: str) -> QIcon | None:
+        color = color_for(tag)
+        if color is None:
+            return None
+        pixmap = QPixmap(12, 12)
+        pixmap.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(color))
+        painter.drawEllipse(1, 1, 10, 10)
+        painter.end()
+        return QIcon(pixmap)
+
+    def _toggle_tags(self, paths: list[str], tag: str) -> None:
+        """Apply the tag to all items, or strip it if they all already have it."""
+        removing = tag in common_tags(paths)
+        errors: list[str] = []
+        for path in paths:
+            result = remove_tag(path, tag) if removing else add_tag(path, tag)
+            if not result.ok:
+                errors.append(result.error)
+        self._report_tag_change(errors, paths, tag, removing)
+
+    def _prompt_tag(self, paths: list[str]) -> None:
+        tag, ok = QInputDialog.getText(self, "Add Tag", "Tag name:")
+        if not ok or not tag.strip():
+            return
+        errors = [r.error for p in paths if not (r := add_tag(p, tag.strip())).ok]
+        self._report_tag_change(errors, paths, tag.strip(), removing=False)
+
+    def _clear_tags(self, paths: list[str]) -> None:
+        errors = [r.error for p in paths if not (r := write_tags(p, [])).ok]
+        if errors:
+            self.statusMessage.emit("; ".join(errors[:3]))
+        else:
+            self.statusMessage.emit(f"Cleared tags on {len(paths)} item(s)")
+        self._refresh_tag_display(paths)
+
+    def _report_tag_change(
+        self, errors: list[str], paths: list[str], tag: str, removing: bool
+    ) -> None:
+        if errors:
+            self.statusMessage.emit("; ".join(errors[:3]))
+        else:
+            verb = "Removed" if removing else "Tagged"
+            preposition = "from" if removing else "on"
+            self.statusMessage.emit(
+                f"{verb} “{tag}” {preposition} {len(paths)} item(s)"
+            )
+        self._refresh_tag_display(paths)
+
+    def _refresh_tag_display(self, paths: list[str]) -> None:
+        self._model.invalidate_tags(paths)
+        self.viewport().update()
+
     def _show_context_menu(self, pos) -> None:
         index = self.indexAt(pos)
         menu = QMenu(self)
@@ -1082,6 +1311,13 @@ class FileListView(QTreeView):
             open_action.triggered.connect(lambda: self._activate_path(path))
             menu.addAction(open_action)
 
+            if os.path.isdir(path):
+                new_tab_action = QAction("Open in New Tab", self)
+                new_tab_action.triggered.connect(
+                    lambda _checked=False, p=path: self.openInNewTabRequested.emit(p)
+                )
+                menu.addAction(new_tab_action)
+
             open_with_menu = menu.addMenu("Open With")
             mime, _ = mimetypes.guess_type(path)
             for app in apps_for_mime(mime or "application/octet-stream")[:12]:
@@ -1108,6 +1344,8 @@ class FileListView(QTreeView):
                 lambda: self.addFavoriteRequested.emit(name, path)
             )
             menu.addAction(add_fav)
+
+            self._build_tags_menu(menu, selected or [path])
 
             menu.addSeparator()
 
@@ -1163,14 +1401,16 @@ class FileListView(QTreeView):
         paths = self.selected_paths()
         if paths:
             FileClipboard.instance().copy(paths)
+            # A copy replaces any pending cut, so clear the ghosting.
+            self._model.set_cut_paths([])
             self.statusMessage.emit(f"Copied {len(paths)} item(s)")
 
     def _cut_selection(self) -> None:
         paths = self.selected_paths()
         if paths:
             FileClipboard.instance().cut(paths)
+            self._model.set_cut_paths(paths)
             self.statusMessage.emit(f"Cut {len(paths)} item(s)")
-            self.viewport().update()
 
     def _paste(self) -> None:
         clipboard = FileClipboard.instance()
@@ -1183,25 +1423,25 @@ class FileListView(QTreeView):
             return
         op = TransferOp.MOVE if is_cut else TransferOp.COPY
         self.statusMessage.emit(f"Transferring {len(paths)} item(s)…")
-        errors = transfer_items(
-            paths, dest, operation=op, on_conflict=self._resolve_conflict
+        errors, cancelled = run_transfer(
+            paths, dest, op, on_conflict=self._resolve_conflict, parent=self
         )
-        if errors:
-            self.statusMessage.emit("; ".join(errors[:3]))
-        else:
-            verb = "Moved" if is_cut else "Pasted"
-            self.statusMessage.emit(f"{verb} {len(paths)} item(s)")
+        verb = "Moved" if is_cut else "Pasted"
+        self._report_transfer(errors, cancelled, verb, len(paths))
+        if not errors and not cancelled:
             if is_cut:
+                # Keep the clipboard (and the ghosting) if nothing completed.
                 clipboard.clear()
+                self._model.set_cut_paths([])
             if self._undo_stack and op is TransferOp.MOVE:
                 pairs = [
                     (os.path.join(dest, os.path.basename(p)), p) for p in paths
                 ]
                 self._undo_stack.push(MoveCommand(pairs=pairs))
-            parent = os.path.dirname(paths[0]) if paths else dest
-            self._model.refresh_directory(parent)
-            self._model.refresh_directory(dest)
-            self.filesTransferred.emit(paths[0], dest)
+        parent = os.path.dirname(paths[0]) if paths else dest
+        self._model.refresh_directory(parent)
+        self._model.refresh_directory(dest)
+        self.filesTransferred.emit(paths[0], dest)
 
     def _duplicate_selection(self) -> None:
         paths = self.selected_paths()
@@ -1210,14 +1450,12 @@ class FileListView(QTreeView):
         parent = self.current_directory()
         if not parent:
             return
-        errors = transfer_items(
-            paths, parent, operation=TransferOp.COPY, on_conflict=self._resolve_conflict
+        errors, cancelled = run_transfer(
+            paths, parent, TransferOp.COPY,
+            on_conflict=self._resolve_conflict, parent=self,
         )
-        if errors:
-            self.statusMessage.emit("; ".join(errors[:3]))
-        else:
-            self.statusMessage.emit(f"Duplicated {len(paths)} item(s)")
-            self._model.refresh_directory(parent)
+        self._report_transfer(errors, cancelled, "Duplicated", len(paths))
+        self._model.refresh_directory(parent)
 
     def _compress_selection(self) -> None:
         paths = self.selected_paths()

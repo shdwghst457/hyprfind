@@ -2,12 +2,41 @@
 
 from __future__ import annotations
 
-from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QColor, QPainter, QPen
-from PyQt6.QtWidgets import QStyledItemDelegate
+from PyQt6.QtCore import QRect, Qt
+from PyQt6.QtGui import QColor, QFont, QPainter, QPen
+from PyQt6.QtWidgets import QStyledItemDelegate, QStyleOptionViewItem
 
 from hyprfind.core.file_ops import TransferOp
+from hyprfind.core.grouping import GROUP_NONE
+from hyprfind.core.model import CUT_ITEM_OPACITY, TAGS_ROLE
+from hyprfind.core.tags import color_for
 from hyprfind.ui.drag_support import highlight_colors
+
+
+def _is_cut(index) -> bool:
+    """True when the row is on the clipboard as a cut."""
+    model = index.model()
+    while model is not None:
+        checker = getattr(model, "is_cut_index", None)
+        if checker is not None:
+            return bool(checker(index))
+        # Walk through proxies to reach the file system model.
+        map_to_source = getattr(model, "mapToSource", None)
+        if map_to_source is None:
+            return False
+        index = map_to_source(index)
+        model = index.model()
+    return False
+
+
+GROUP_HEADER_HEIGHT = 22
+GROUP_HEADER_COLOR = QColor("#8e8e93")
+GROUP_RULE_COLOR = QColor("#3a3a3f")
+
+TAG_DOT_SIZE = 8
+TAG_DOT_GAP = 3
+# Beyond a handful the dots stop being readable and start eating the filename.
+MAX_TAG_DOTS = 4
 
 
 class DropHighlightDelegate(QStyledItemDelegate):
@@ -15,7 +44,99 @@ class DropHighlightDelegate(QStyledItemDelegate):
         super().__init__(parent)
         self._view = view
 
+    # ------------------------------------------------------------- group headers
+
+    @staticmethod
+    def _heading_for_row(index) -> str | None:
+        """Heading above this row, or None when it continues the group above."""
+        proxy = index.model()
+        if proxy is None or not hasattr(proxy, "group_of"):
+            return None
+        if proxy.group_by == GROUP_NONE:
+            return None
+        first = index.sibling(index.row(), 0)
+        group = proxy.group_of(first)
+        if not group[1]:
+            return None
+        if index.row() == 0:
+            return group[1]
+        previous = proxy.group_of(index.sibling(index.row() - 1, 0))
+        return group[1] if group != previous else None
+
+    def _row_has_heading(self, index) -> bool:
+        return self._heading_for_row(index) is not None
+
+    def sizeHint(self, option, index):
+        size = super().sizeHint(option, index)
+        if self._row_has_heading(index):
+            size.setHeight(size.height() + GROUP_HEADER_HEIGHT + 1)
+        return size
+
+    def _draw_group_heading(self, painter: QPainter, option, heading: str) -> QRect:
+        """Draw the heading band and return the rect left for the row itself."""
+        band = QRect(option.rect)
+        band.setHeight(GROUP_HEADER_HEIGHT)
+
+        painter.save()
+        font = QFont(option.font)
+        font.setBold(True)
+        font.setPointSizeF(max(7.5, font.pointSizeF() - 1.0))
+        painter.setFont(font)
+        painter.setPen(GROUP_HEADER_COLOR)
+        text_rect = band.adjusted(4, 0, -6, 0)
+        painter.drawText(
+            text_rect,
+            int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter),
+            heading,
+        )
+        baseline = band.bottom() - 1
+        painter.setPen(QPen(GROUP_RULE_COLOR, 1))
+        painter.drawLine(band.left(), baseline, band.right(), baseline)
+        painter.restore()
+
+        remainder = QRect(option.rect)
+        remainder.setTop(band.bottom() + 1)
+        return remainder
+
+    # ---------------------------------------------------------------- tag swatches
+
+    @staticmethod
+    def _tags_for(index) -> list[str]:
+        value = index.data(TAGS_ROLE)
+        return value if isinstance(value, list) else []
+
+    def _draw_tag_dots(self, painter: QPainter, rect: QRect, tags: list[str]) -> int:
+        """Draw colour dots at the right of the name cell; returns width used."""
+        colors = [color_for(tag) for tag in tags]
+        colors = [c for c in colors if c][:MAX_TAG_DOTS]
+        if not colors:
+            return 0
+
+        width = len(colors) * (TAG_DOT_SIZE + TAG_DOT_GAP) + TAG_DOT_GAP
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(Qt.PenStyle.NoPen)
+        x = rect.right() - width + TAG_DOT_GAP
+        y = rect.center().y() - TAG_DOT_SIZE // 2
+        for color in colors:
+            painter.setBrush(QColor(color))
+            painter.drawEllipse(x, y, TAG_DOT_SIZE, TAG_DOT_SIZE)
+            x += TAG_DOT_SIZE + TAG_DOT_GAP
+        painter.restore()
+        return width
+
     def paint(self, painter: QPainter, option, index) -> None:
+        if self._row_has_heading(index):
+            # QStyledItemDelegate.paint honours the rect it is handed, so
+            # shrinking it here reserves the band above the row.
+            option = QStyleOptionViewItem(option)
+            if index.column() == 0:
+                option.rect = self._draw_group_heading(
+                    painter, option, self._heading_for_row(index)
+                )
+            else:
+                option.rect = option.rect.adjusted(0, GROUP_HEADER_HEIGHT + 1, 0, 0)
+
         view = self._view
         if view is not None:
             rect = option.rect
@@ -47,5 +168,22 @@ class DropHighlightDelegate(QStyledItemDelegate):
                 painter.setBrush(Qt.BrushStyle.NoBrush)
                 painter.drawRoundedRect(inner, 6, 6)
                 painter.restore()
+
+        if index.column() == 0:
+            tags = self._tags_for(index)
+            if tags:
+                used = self._draw_tag_dots(painter, option.rect, tags)
+                if used:
+                    # Let the name elide before it reaches the dots.
+                    option = QStyleOptionViewItem(option)
+                    option.rect = option.rect.adjusted(0, 0, -used, 0)
+
+        if _is_cut(index):
+            # Fades the icon as well; the model dims only the text.
+            painter.save()
+            painter.setOpacity(CUT_ITEM_OPACITY)
+            super().paint(painter, option, index)
+            painter.restore()
+            return
 
         super().paint(painter, option, index)
