@@ -32,17 +32,26 @@ Finder-quality list-view file manager for Hyprland/Linux, built with PyQt6.
 On CachyOS / Arch, once:
 
 ```bash
-sudo pacman -S python python-pip python-pyqt6 gio xdg-user-dirs udisks2 breeze-icons
-git clone https://github.com/YOUR_USER/hyprfind.git
+sudo pacman -S python python-pip python-pyqt6 glib2 xdg-user-dirs udisks2 breeze-icons
+git clone https://github.com/shdwghst457/hyprfind.git
 cd hyprfind
 chmod +x install-local.sh
 ./install-local.sh
 ```
 
+To mount network shares with **Connect to Server**, also install GVFS (add
+`gvfs-nfs` if you use NFS):
+
+```bash
+sudo pacman -S gvfs gvfs-smb
+```
+
 That script: installs into a venv, puts `hyprfind` on `~/.local/bin`, and registers **HyprFind** in your app launcher (wofi/rofi/etc.).
 
-Two of those packages matter more than they look:
+Three of those packages matter more than they look:
 
+- **`glib2`** — provides the `gio` command HyprFind shells out to for network
+  shares and trash operations. There is no package called `gio`.
 - **`udisks2`** — lets HyprFind mount and eject USB drives without root. A bare
   Hyprland session runs no auto-mount daemon, so HyprFind lists attached drives
   itself and mounts them when you click. Without udisks2 you can still browse
@@ -80,6 +89,19 @@ changes:
 - a new dependency in `pyproject.toml`
 - a change to the `[project.scripts]` entry point
 - the `.desktop` launcher entry or the project's location on disk
+
+### Updating another machine
+
+On a machine that already has a clone (the hyprbook), pulling is the whole
+deploy step — the editable install picks the new code up on next launch:
+
+```bash
+cd ~/hyprfind
+git pull
+```
+
+On a machine that has never had it, follow the Install section above. Note that
+`.venv/` is gitignored, so each machine builds its own via `install-local.sh`.
 
 To check what is currently wired up:
 
