@@ -25,28 +25,41 @@ class Protocol:
     ``domain`` is a Windows/NTLM concept, so only SMB asks for it. NFS
     authenticates by host rather than by user, so it takes no credentials
     at all.
+
+    ``package`` is the Arch package shipping the backend. Only SMB and NFS are
+    split out; sftp, ftp and afp live in base ``gvfs``. ``packaged`` is False
+    for schemes no official package provides, so the dialog can say so instead
+    of naming a package that does not exist.
     """
 
     scheme: str
     label: str
     placeholder: str
     backend: str
-    package: str
+    package: str = "gvfs"
     credentials: bool = True
     domain: bool = False
+    packaged: bool = True
 
 
 PROTOCOLS: tuple[Protocol, ...] = (
-    Protocol("smb", "SMB / Windows share", "server/share", "smb", "gvfs-smb", domain=True),
-    Protocol("sftp", "SFTP (SSH)", "server", "sftp", "gvfs"),
-    Protocol("ftp", "FTP", "server", "ftp", "gvfs"),
+    Protocol(
+        "smb", "SMB / Windows share", "server/share", "smb", "gvfs-smb", domain=True
+    ),
+    Protocol("sftp", "SFTP (SSH)", "server", "sftp"),
+    Protocol("ftp", "FTP", "server", "ftp"),
+    Protocol("ftps", "FTP over TLS", "server", "ftp"),
     Protocol("nfs", "NFS", "server/export", "nfs", "gvfs-nfs", credentials=False),
-    Protocol("davs", "WebDAV (HTTPS)", "server/path", "dav", "gvfs"),
-    Protocol("dav", "WebDAV (HTTP)", "server/path", "dav", "gvfs"),
-    Protocol("afp", "AFP", "server/volume", "afp", "gvfs-afp"),
+    Protocol("afp", "AFP (Apple)", "server/volume", "afp"),
+    # Arch's gvfs 1.60 ships no gvfsd-dav, and no gvfs-dav package exists.
+    # Kept so a pasted dav:// URI is not silently rewritten as SMB, and so it
+    # works on distributions that do ship the backend.
+    Protocol("davs", "WebDAV (HTTPS)", "server/path", "dav", packaged=False),
+    Protocol("dav", "WebDAV (HTTP)", "server/path", "dav", packaged=False),
 )
 
-# ``ssh`` is accepted as an alias because people paste it, but gio wants sftp.
+# gvfs itself aliases ssh to the sftp backend; the rest are conveniences for
+# addresses people paste.
 SCHEME_ALIASES = {"ssh": "sftp", "webdav": "dav", "webdavs": "davs", "cifs": "smb"}
 
 SUPPORTED_SCHEMES = tuple(p.scheme for p in PROTOCOLS)
@@ -193,22 +206,64 @@ def _credential_input(
 
 _ALREADY_MOUNTED = re.compile(r"already mounted", re.IGNORECASE)
 
-# gio's wording for "no GVFS backend handles this scheme". The apostrophe is a
-# Unicode right single quote in gio's output, so match loosely.
-_NO_BACKEND = re.compile(r"doesn.t implement mount", re.IGNORECASE)
-
-# Distros disagree on where the gvfsd helpers live.
-_GVFS_LIBEXEC_DIRS = (
-    "/usr/lib/gvfs",
-    "/usr/libexec/gvfs",
-    "/usr/lib64/gvfs",
-    "/usr/lib/x86_64-linux-gnu/gvfs",
+# gio's two wordings for "no GVFS backend handles this scheme". The apostrophe
+# is a Unicode right single quote in gio's output, so match it loosely.
+_NO_BACKEND = re.compile(
+    r"doesn.t implement mount|is not mountable|not supported", re.IGNORECASE
 )
+
+def _mount_definition_dirs() -> list[str]:
+    """Directories holding GVFS ``.mount`` files."""
+    roots = [d for d in os.environ.get("XDG_DATA_DIRS", "").split(":") if d]
+    for fallback in ("/usr/local/share", "/usr/share"):
+        if fallback not in roots:
+            roots.append(fallback)
+    return [os.path.join(root, "gvfs", "mounts") for root in roots]
+
+
+def supported_schemes() -> frozenset[str]:
+    """Schemes gio can actually mount here.
+
+    Reads the same ``.mount`` definitions gio reads rather than guessing where
+    the helpers live: Arch installs them as ``/usr/lib/gvfsd-smb`` while other
+    distributions use ``/usr/libexec/gvfs/``, and only the definition knows
+    which scheme a backend claims.
+    """
+    found: set[str] = set()
+    for directory in _mount_definition_dirs():
+        try:
+            names = os.listdir(directory)
+        except OSError:
+            continue
+        for name in names:
+            if not name.endswith(".mount"):
+                continue
+            try:
+                text = Path(directory, name).read_text(encoding="utf-8")
+            except OSError:
+                continue
+
+            schemes: list[str] = []
+            executable = ""
+            for line in text.splitlines():
+                key, _, value = line.partition("=")
+                if key == "Scheme":
+                    schemes.append(value)
+                elif key == "SchemeAliases":
+                    schemes.extend(value.replace(";", ",").split(","))
+                elif key == "Exec":
+                    parts = value.split()
+                    executable = parts[0] if parts else ""
+            # A definition whose helper is gone cannot serve a mount.
+            if not executable or not os.path.exists(executable):
+                continue
+            found.update(s.strip().lower() for s in schemes if s.strip())
+    return frozenset(found)
 
 
 def gvfs_installed() -> bool:
-    """True when the GVFS daemon directory exists at all."""
-    return any(os.path.isdir(d) for d in _GVFS_LIBEXEC_DIRS)
+    """True when any GVFS mount definition directory is present."""
+    return any(os.path.isdir(d) for d in _mount_definition_dirs())
 
 
 def missing_backend(scheme: str) -> str | None:
@@ -218,15 +273,20 @@ def missing_backend(scheme: str) -> str | None:
     reads like a server problem, so check up front and name the package.
     """
     protocol = protocol_for(scheme)
+    # An installed backend settles it, whatever the packaging looks like.
+    if protocol.scheme in supported_schemes():
+        return None
+    if not protocol.packaged:
+        return (
+            f"{protocol.label} is not available: no GVFS backend for it is "
+            f"packaged on Arch. Use SFTP or SMB instead."
+        )
     if not gvfs_installed():
         extra = "" if protocol.package == "gvfs" else f" and {protocol.package}"
         return (
             f"GVFS is not installed, so no network shares can be mounted. "
             f"Install gvfs{extra}."
         )
-    for directory in _GVFS_LIBEXEC_DIRS:
-        if os.path.exists(os.path.join(directory, f"gvfsd-{protocol.backend}")):
-            return None
     return (
         f"The {protocol.label} backend is not installed. "
         f"Install {protocol.package}."

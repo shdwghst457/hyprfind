@@ -65,6 +65,11 @@ package list for you to translate.
 | `breeze-icons` | an icon theme |
 | `gvfs`, `gvfs-smb`, `gvfs-nfs` | **Connect to Server**; optional |
 
+Only SMB and NFS have their own packages. The SFTP, FTP, FTPS and AFP backends
+all ship inside base `gvfs`, so there is no `gvfs-sftp` or `gvfs-afp` to add.
+WebDAV has no official Arch package at all, and HyprFind says so rather than
+naming a package that does not exist.
+
 Three of those matter more than they look:
 
 - **`udisks2`** — a bare Hyprland session runs no auto-mount daemon, so
@@ -78,7 +83,8 @@ Three of those matter more than they look:
 - **`gvfs` / `gvfs-smb`** — without a backend, `gio` refuses every mount with
   the unhelpful "volume doesn't implement mount". HyprFind detects this and
   names the missing package instead, but it still cannot mount anything until
-  the backend is installed.
+  the backend is installed. After installing, log out and back in so the
+  session picks up the gvfs daemon.
 
 PyQt6 is deliberately not in that list: the venv is isolated from system
 site-packages, so Qt comes from the pip wheel rather than `python-pyqt6`.

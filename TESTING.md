@@ -476,7 +476,7 @@ Aesthetic regressions are easy to miss, so check these deliberately.
 | 25.10 | Recent reuse | Double-click a recent entry | Connects immediately | |
 | 25.11 | Recent remove | Select a recent, press Remove | Gone, and still gone after reopening | |
 | 25.12 | Already mounted | Connect to an already-mounted share | Treated as success and navigates there | |
-| 25.13 | Protocol menu | Open the Protocol dropdown | SMB, SFTP, FTP, NFS, WebDAV (HTTPS/HTTP), AFP | |
+| 25.13 | Protocol menu | Open the Protocol dropdown | SMB, SFTP, FTP, FTPS, NFS, AFP, WebDAV (HTTPS/HTTP) | |
 | 25.14 | Domain is SMB-only | Switch protocol to SFTP | Domain row disappears; reappears on SMB | |
 | 25.15 | NFS has no credentials | Choose NFS | Whole Credentials box hidden; no dead gap left behind | |
 | 25.16 | Pasting a URI | Paste `sftp://host/dir` into Server | Protocol switches to SFTP, scheme stripped from the field | |
@@ -485,6 +485,10 @@ Aesthetic regressions are easy to miss, so check these deliberately.
 | 25.19 | Live address preview | Type an address | Hint reads "Will connect to &lt;uri&gt;" | |
 | 25.20 | Missing backend warning | On a box without `gvfs-smb`, choose SMB | Hint names the missing package before you click Connect | |
 | 25.21 | Missing backend on connect | Click Connect anyway | Error names the package — never "volume doesn't implement mount" | |
+| 25.22 | Installed backend is detected | With `gvfs-smb` installed, choose SMB | Hint shows the address, *not* a missing-backend warning | |
+| 25.23 | WebDAV honesty | Choose WebDAV | Says it is not packaged on Arch; no invented `gvfs-dav` | |
+| 25.24 | No duplicate error | Trigger a missing-backend error | Message appears once, not in both the hint and the status line | |
+| 25.25 | Per-protocol packages | Choose NFS without `gvfs-nfs` | Names `gvfs-nfs`; SFTP/AFP name plain `gvfs` | |
 
 ---
 
@@ -524,6 +528,9 @@ Use this section to avoid filing false bugs:
   works on shares that allow anonymous access and fails clearly on those that do not
 - **Kerberos / saved keyring credentials** — passwords are passed to `gio` per
   connection and never stored
+- **WebDAV** — Arch's gvfs 1.60 ships no `gvfsd-dav` and no package provides
+  it, so the protocol is listed but reports itself unavailable. It works on
+  distributions that do ship the backend
 - **Icon/column view polish** — basic vs Finder
 - **PDF preview** — requires `PyQt6` PDF bindings (`python-pyqt6-pdf` on Arch if packaged)
 

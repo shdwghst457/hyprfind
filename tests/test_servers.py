@@ -7,6 +7,7 @@ from hyprfind.core.servers import (
     _last_meaningful_line,
     build_server_uri,
     missing_backend,
+    supported_schemes,
     normalize_server_uri,
     parse_server_uri,
     protocol_for,
@@ -152,8 +153,9 @@ def test_guest_and_credential_free_protocols():
     assert _credential_input("u", "d", "p", False, "nfs") == "\n"
 
 
-def test_missing_backend_names_the_package(monkeypatch):
-    monkeypatch.setattr("hyprfind.core.servers.gvfs_installed", lambda: False)
+def test_missing_backend_names_the_package(tmp_path, monkeypatch):
+    # A gvfs install that lacks the SMB backend.
+    fake_gvfs(tmp_path, monkeypatch, {"sftp": ("sftp", "", True)})
     message = missing_backend("smb")
     assert message is not None
     assert "gvfs-smb" in message
@@ -161,18 +163,119 @@ def test_missing_backend_names_the_package(monkeypatch):
     assert "implement mount" not in message
 
 
-def test_missing_backend_for_bundled_scheme_says_gvfs(monkeypatch):
-    monkeypatch.setattr("hyprfind.core.servers.gvfs_installed", lambda: False)
+def test_missing_backend_for_bundled_scheme_says_gvfs(tmp_path, monkeypatch):
+    fake_gvfs(tmp_path, monkeypatch, {"smb": ("smb", "", True)})
     message = missing_backend("sftp")
     assert message is not None and "gvfs" in message
 
 
-def test_backend_present_reports_no_problem(monkeypatch, tmp_path):
-    (tmp_path / "gvfsd-smb").write_text("")
-    monkeypatch.setattr("hyprfind.core.servers.gvfs_installed", lambda: True)
+def test_only_smb_and_nfs_are_split_into_own_packages():
+    """sftp/ftp/afp live in base gvfs; there is no gvfs-sftp or gvfs-afp."""
+    split = {p.package for p in PROTOCOLS if p.packaged and p.package != "gvfs"}
+    assert split == {"gvfs-smb", "gvfs-nfs"}
+
+
+def test_webdav_is_marked_unpackaged():
+    # Arch ships no gvfsd-dav and no gvfs-dav package.
+    assert protocol_for("dav").packaged is False
+    assert protocol_for("davs").packaged is False
+    assert protocol_for("afp").packaged is True
+
+
+def fake_gvfs(tmp_path, monkeypatch, definitions):
+    """Build a GVFS mount-definition tree and point the module at it.
+
+    ``definitions`` maps a .mount basename to (scheme, aliases, helper_exists).
+    """
+    mounts = tmp_path / "share" / "gvfs" / "mounts"
+    mounts.mkdir(parents=True)
+    for name, (scheme, aliases, helper_exists) in definitions.items():
+        helper = tmp_path / f"gvfsd-{name}"
+        if helper_exists:
+            helper.write_text("")
+        body = ["[Mount]", f"Type={name}", f"Exec={helper}"]
+        if scheme:
+            body.append(f"Scheme={scheme}")
+        if aliases:
+            body.append(f"SchemeAliases={aliases}")
+        (mounts / f"{name}.mount").write_text("\n".join(body) + "\n")
     monkeypatch.setattr(
-        "hyprfind.core.servers._GVFS_LIBEXEC_DIRS", (str(tmp_path),)
+        "hyprfind.core.servers._mount_definition_dirs", lambda: [str(mounts)]
     )
+    return mounts
+
+
+def test_backend_found_where_arch_actually_puts_it(tmp_path, monkeypatch):
+    """Arch installs helpers as /usr/lib/gvfsd-smb, not /usr/lib/gvfs/gvfsd-smb.
+
+    Looking in the wrong place reported an installed backend as missing and
+    refused to mount, so the scheme comes from the .mount definition instead.
+    """
+    fake_gvfs(tmp_path, monkeypatch, {"smb": ("smb", "", True)})
+    assert supported_schemes() == {"smb"}
     assert missing_backend("smb") is None
-    # sftp backend file is absent, so it should still be reported.
+
+
+def test_definition_without_its_helper_is_not_supported(tmp_path, monkeypatch):
+    fake_gvfs(tmp_path, monkeypatch, {"smb": ("smb", "", False)})
+    assert supported_schemes() == frozenset()
+    assert missing_backend("smb") is not None
+
+
+def test_scheme_aliases_from_definitions_count(tmp_path, monkeypatch):
+    # gvfs declares SchemeAliases=ssh on sftp.mount.
+    fake_gvfs(tmp_path, monkeypatch, {"sftp": ("sftp", "ssh", True)})
+    assert supported_schemes() == {"sftp", "ssh"}
+
+
+def test_unpackaged_scheme_does_not_invent_a_package(tmp_path, monkeypatch):
+    fake_gvfs(tmp_path, monkeypatch, {"smb": ("smb", "", True)})
+    message = missing_backend("dav")
+    assert message is not None
+    assert "install gvfs-dav" not in message.casefold()
+    assert "not available" in message
+
+
+def test_unpackaged_scheme_works_when_the_distro_ships_it(tmp_path, monkeypatch):
+    """Debian and Fedora do ship a dav backend, so a present one must win."""
+    fake_gvfs(tmp_path, monkeypatch, {"dav": ("dav", "davs", True)})
+    assert missing_backend("dav") is None
+    assert missing_backend("davs") is None
+
+
+def test_dav_uri_is_not_silently_turned_into_smb():
+    # Coercing an unmountable scheme to SMB would connect somewhere unexpected.
+    assert protocol_for("dav").scheme == "dav"
+    assert split_server_uri("dav://host/path") == ("dav", "host/path")
+
+
+def test_ftps_is_offered_and_uses_the_ftp_backend():
+    assert protocol_for("ftps").scheme == "ftps"
+    assert protocol_for("ftps").backend == "ftp"
+
+
+def test_backend_present_reports_no_problem(tmp_path, monkeypatch):
+    fake_gvfs(tmp_path, monkeypatch, {"smb": ("smb", "", True)})
+    assert missing_backend("smb") is None
+    # No sftp definition, so it should still be reported.
     assert missing_backend("sftp") is not None
+
+
+def test_no_definitions_at_all_reads_as_gvfs_absent(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "hyprfind.core.servers._mount_definition_dirs",
+        lambda: [str(tmp_path / "nope")],
+    )
+    message = missing_backend("smb")
+    assert message is not None and "GVFS is not installed" in message
+
+
+def test_both_gio_no_backend_wordings_are_recognised():
+    """gio says "doesn't implement mount" or "Location is not mountable"."""
+    from hyprfind.core.servers import _NO_BACKEND
+
+    assert _NO_BACKEND.search("gio: smb://h: volume doesn\u2019t implement mount")
+    assert _NO_BACKEND.search("gio: dav://h/: Location is not mountable")
+    # A real connection failure must not be mistaken for a missing backend.
+    assert not _NO_BACKEND.search("Failed to mount Windows share: Permission denied")
+    assert not _NO_BACKEND.search("Could not resolve hostname")

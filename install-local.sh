@@ -62,6 +62,10 @@ REQUIRED_PKGS=(python python-pip glib2 udisks2 xdg-user-dirs xdg-utils util-linu
 
 # Needed only for Connect to Server. Without a backend, gio reports the
 # confusing "volume doesn't implement mount".
+#
+# This is the complete set: only SMB and NFS are split into their own packages.
+# sftp, ftp, ftps and afp backends all ship inside base gvfs, so there is no
+# gvfs-sftp or gvfs-afp to add. WebDAV has no official Arch package at all.
 NETWORK_PKGS=(gvfs gvfs-smb gvfs-nfs)
 
 # Binaries to verify afterwards, as "binary:package".

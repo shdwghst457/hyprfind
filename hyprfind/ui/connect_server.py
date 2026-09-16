@@ -272,7 +272,9 @@ class ConnectServerDialog(QDialog):
     def _on_mounted(self, target: ServerTarget, point, error) -> None:
         self._join_thread()
         if error:
-            self._status.setText(error)
+            # A missing backend is already spelled out in the hint above the
+            # form, so repeating it here would print the same paragraph twice.
+            self._status.setText("" if error == self._hint.text() else error)
             self._update_enabled()
             return
         self.mount_point = point
