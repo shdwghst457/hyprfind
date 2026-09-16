@@ -464,8 +464,8 @@ Aesthetic regressions are easy to miss, so check these deliberately.
 
 | # | Test | Steps | Expected | Pass |
 |---|------|-------|----------|------|
-| 25.1 | Bare host/share | Go → Connect to Server, enter `nas/media` | Treated as `smb://nas/media` | |
-| 25.2 | UNC path | Enter `\\nas\media` | Same result | |
+| 25.1 | Bare host/share | Go → Connect to Server, enter `nas/media` with SMB selected | Treated as `smb://nas/media` | |
+| 25.2 | UNC path | Enter `\\nas\media` | Protocol flips to SMB, field shows `nas/media` | |
 | 25.3 | Connect button gating | Empty field | Connect disabled until an address is typed | |
 | 25.4 | Guest mode | Tick "Connect as guest" | Name/Domain/Password disabled | |
 | 25.5 | Successful mount | Connect to a real share | Dialog closes, sidebar reloads, pane navigates into it | |
@@ -476,6 +476,15 @@ Aesthetic regressions are easy to miss, so check these deliberately.
 | 25.10 | Recent reuse | Double-click a recent entry | Connects immediately | |
 | 25.11 | Recent remove | Select a recent, press Remove | Gone, and still gone after reopening | |
 | 25.12 | Already mounted | Connect to an already-mounted share | Treated as success and navigates there | |
+| 25.13 | Protocol menu | Open the Protocol dropdown | SMB, SFTP, FTP, NFS, WebDAV (HTTPS/HTTP), AFP | |
+| 25.14 | Domain is SMB-only | Switch protocol to SFTP | Domain row disappears; reappears on SMB | |
+| 25.15 | NFS has no credentials | Choose NFS | Whole Credentials box hidden; no dead gap left behind | |
+| 25.16 | Pasting a URI | Paste `sftp://host/dir` into Server | Protocol switches to SFTP, scheme stripped from the field | |
+| 25.17 | `ssh://` alias | Paste `ssh://host` | Protocol becomes SFTP (gio has no ssh backend) | |
+| 25.18 | Bare input respects menu | Select NFS, type `box/export` | Builds `nfs://box/export`, not SMB | |
+| 25.19 | Live address preview | Type an address | Hint reads "Will connect to &lt;uri&gt;" | |
+| 25.20 | Missing backend warning | On a box without `gvfs-smb`, choose SMB | Hint names the missing package before you click Connect | |
+| 25.21 | Missing backend on connect | Click Connect anyway | Error names the package — never "volume doesn't implement mount" | |
 
 ---
 

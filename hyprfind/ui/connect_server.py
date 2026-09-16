@@ -9,6 +9,7 @@ from __future__ import annotations
 from PyQt6.QtCore import QObject, Qt, QThread, pyqtSignal
 from PyQt6.QtWidgets import (
     QCheckBox,
+    QComboBox,
     QDialog,
     QDialogButtonBox,
     QFormLayout,
@@ -24,11 +25,15 @@ from PyQt6.QtWidgets import (
 )
 
 from hyprfind.core.servers import (
+    PROTOCOLS,
     ServerStore,
     ServerTarget,
+    build_server_uri,
+    missing_backend,
     mount_server,
-    normalize_server_uri,
     parse_server_uri,
+    protocol_for,
+    split_server_uri,
 )
 
 
@@ -80,24 +85,27 @@ class ConnectServerDialog(QDialog):
         layout.setSpacing(12)
 
         address_row = QHBoxLayout()
+        self._protocol = QComboBox()
+        for protocol in PROTOCOLS:
+            self._protocol.addItem(protocol.label, protocol.scheme)
+        self._protocol.currentIndexChanged.connect(self._on_protocol_changed)
         self._address = QLineEdit()
-        self._address.setPlaceholderText("smb://server/share")
-        self._address.textChanged.connect(self._update_enabled)
+        self._address.textChanged.connect(self._on_address_changed)
         self._address.returnPressed.connect(self._connect)
+        address_row.addWidget(QLabel("Protocol:"))
+        address_row.addWidget(self._protocol)
         address_row.addWidget(QLabel("Server:"))
         address_row.addWidget(self._address, 1)
         layout.addLayout(address_row)
 
-        hint = QLabel(
-            "Supports smb://, sftp://, ftp://, nfs://, dav://. "
-            "A bare host/share is treated as SMB."
-        )
-        hint.setObjectName("transferDetail")
-        hint.setWordWrap(True)
-        layout.addWidget(hint)
+        self._hint = QLabel("")
+        self._hint.setObjectName("transferDetail")
+        self._hint.setWordWrap(True)
+        layout.addWidget(self._hint)
 
-        credentials = QGroupBox("Credentials")
-        form = QFormLayout(credentials)
+        self._credentials = QGroupBox("Credentials")
+        form = QFormLayout(self._credentials)
+        self._form = form
         self._anonymous = QCheckBox("Connect as guest")
         self._anonymous.toggled.connect(self._update_enabled)
         form.addRow(self._anonymous)
@@ -109,15 +117,17 @@ class ConnectServerDialog(QDialog):
         self._password = QLineEdit()
         self._password.setEchoMode(QLineEdit.EchoMode.Password)
         form.addRow("Password:", self._password)
-        layout.addWidget(credentials)
+        layout.addWidget(self._credentials)
 
         recent_label = QLabel("Recent Servers")
         layout.addWidget(recent_label)
         self._recent = QListWidget()
-        self._recent.setMaximumHeight(120)
+        self._recent.setMinimumHeight(96)
         self._recent.itemActivated.connect(self._use_recent)
         self._recent.currentItemChanged.connect(self._on_recent_selected)
-        layout.addWidget(self._recent)
+        # Let the list take the slack so hiding the credentials box for NFS
+        # does not leave a hole in the middle of the dialog.
+        layout.addWidget(self._recent, 1)
 
         recent_buttons = QHBoxLayout()
         recent_buttons.addStretch(1)
@@ -160,6 +170,7 @@ class ConnectServerDialog(QDialog):
         self._remove_button.setEnabled(current is not None)
 
     def _use_recent(self, item: QListWidgetItem) -> None:
+        # Setting the full URI lets _on_address_changed split out the protocol.
         self._address.setText(item.data(Qt.ItemDataRole.UserRole))
         self._connect()
 
@@ -170,23 +181,75 @@ class ConnectServerDialog(QDialog):
         self._store.remove(item.data(Qt.ItemDataRole.UserRole))
         self._reload_recent()
 
+    def _current_protocol(self):
+        return protocol_for(self._protocol.currentData())
+
+    def _current_uri(self) -> str:
+        return build_server_uri(self._protocol.currentData(), self._address.text())
+
+    def _on_protocol_changed(self) -> None:
+        self._update_enabled()
+
+    def _on_address_changed(self, text: str) -> None:
+        """Let a pasted URI drive the protocol menu instead of fighting it."""
+        if "://" in text or text.startswith("\\\\"):
+            scheme, location = split_server_uri(text)
+            index = self._protocol.findData(scheme)
+            if index >= 0:
+                self._protocol.blockSignals(True)
+                self._protocol.setCurrentIndex(index)
+                self._protocol.blockSignals(False)
+            self._address.blockSignals(True)
+            self._address.setText(location)
+            self._address.blockSignals(False)
+        self._update_enabled()
+
+    def _set_row_visible(self, widget, visible: bool) -> None:
+        if hasattr(self._form, "setRowVisible"):
+            self._form.setRowVisible(widget, visible)
+            return
+        widget.setVisible(visible)
+        label = self._form.labelForField(widget)
+        if label is not None:
+            label.setVisible(visible)
+
     def _update_enabled(self) -> None:
+        protocol = self._current_protocol()
+        self._address.setPlaceholderText(protocol.placeholder)
+
+        # Domain is a Windows concept, so it only belongs to SMB; NFS
+        # authenticates by host and takes no credentials at all.
+        self._credentials.setVisible(protocol.credentials)
+        self._set_row_visible(self._domain, protocol.domain)
+
         anonymous = self._anonymous.isChecked()
         for widget in (self._user, self._domain, self._password):
             widget.setEnabled(not anonymous)
-        self._connect_button.setEnabled(
-            bool(normalize_server_uri(self._address.text())) and self._thread is None
-        )
+
+        uri = self._current_uri()
+        warning = missing_backend(protocol.scheme)
+        if warning:
+            self._hint.setText(warning)
+        elif uri:
+            self._hint.setText(f"Will connect to {uri}")
+        else:
+            self._hint.setText(f"Enter a {protocol.label} address.")
+
+        self._connect_button.setEnabled(bool(uri) and self._thread is None)
 
     # ------------------------------------------------------------------ mounting
 
     def _connect(self) -> None:
         if self._thread is not None:
             return
-        target = parse_server_uri(self._address.text())
+        protocol = self._current_protocol()
+        target = parse_server_uri(self._current_uri())
         if target is None:
             QMessageBox.warning(
-                self, "Connect to Server", "Enter an address like smb://server/share."
+                self,
+                "Connect to Server",
+                f"Enter a {protocol.label} address, for example "
+                f"{protocol.placeholder}.",
             )
             return
 
@@ -197,7 +260,7 @@ class ConnectServerDialog(QDialog):
         self._worker = _MountWorker(
             target,
             self._user.text().strip(),
-            self._domain.text().strip(),
+            self._domain.text().strip() if protocol.domain else "",
             self._password.text(),
             self._anonymous.isChecked(),
         )
